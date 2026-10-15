@@ -863,7 +863,6 @@ def _storage_failure_report(report: dict[str, Any], failure: StorageFailure, *, 
     report["installation_state"] = failure.state
     report["storage_code"] = failure.code
     report["installed"] = installed
-    report["installed"] = installed
     report["durability_confirmed"] = bool(getattr(failure, "durability_confirmed", False))
     report["cleanup_required"] = bool(getattr(failure, "cleanup_required", False))
     report["cleanup_artifacts"] = list(getattr(failure, "artifacts", ()))

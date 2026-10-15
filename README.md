@@ -1,13 +1,13 @@
 # Media House revenue engine and lead discovery
 
-This workspace contains a small Python 3.12 + SQLite lead pipeline and an
+This workspace contains a small Python 3.11 + SQLite lead pipeline and an
 optional OpenStreetMap/Overpass discovery adapter. Both use only the standard
 library. The supplied documentation under `media_house_complete_documentation/`
 is retained; `docs/BASELINE_AUDIT.md` records the earlier, local-only baseline.
 
 ## Setup
 
-The supported rebuild uses Python **3.12.3**, pinned in `.python-version`, and
+The supported rebuild uses Python **3.11.13**, pinned in `.python-version`, and
 [uv](https://docs.astral.sh/uv/) **0.13.0**. The application has no runtime
 dependencies outside the Python standard library; `uv.lock` records the
 resolved project metadata and empty runtime dependency set. Docker supplies
@@ -26,9 +26,14 @@ From the repository root:
 ```bash
 pipx install 'uv==0.13.0'  # only if uv 0.13.0 is absent
 export PATH="$HOME/.local/bin:$PATH"  # needed if ~/.local/bin is not already on PATH
-# Use the Ubuntu CPython build, which provides SQLite image APIs required by Finder.
-uv sync --locked --python /usr/bin/python3
+uv python install 3.11.13
+uv sync --locked
 ```
+
+Finder file-target operations additionally require a Python `sqlite3` build
+exposing `Connection.serialize` and `Connection.deserialize`; the application
+checks these APIs and fails closed before opening a file target. The pinned
+Python 3.11.13 environment is the supported reproducible build.
 
 `uv sync --locked` fails instead of changing the lockfile when the project
 metadata and `uv.lock` disagree. Copy `.env.example` to `.env` only when a

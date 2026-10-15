@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import media_house.finder.linux_storage as storage
+from media_house.finder.errors import FinderError
 
 
 class _BoundaryProxy:
@@ -36,9 +37,11 @@ class _BoundaryProxy:
         self.fail_probe_unlink = False
         self.create_target_after_probe = False
         self.fail_stage_close = False
+        self.fail_parent_close = False
         self.substitute_parent_after_link = False
         self.substituted_parent: Path | None = None
         self._stage_close_failed = False
+        self.parent_fd: int | None = None
 
     def open_root(self) -> int:
         return self._real.open_root()  # type: ignore[attr-defined]
@@ -54,6 +57,8 @@ class _BoundaryProxy:
             self.database.unlink()
             self.delete_before_target_open = False
         fd = self._real.openat2(dirfd, name, flags, mode=mode, resolve=resolve)  # type: ignore[attr-defined]
+        if flags == (os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW):
+            self.parent_fd = fd
         if (flags & os.O_TMPFILE) == os.O_TMPFILE:
             self.tmpfile_fds.append(fd)
             if len(self.tmpfile_fds) == 2:
@@ -75,6 +80,9 @@ class _BoundaryProxy:
         return result
 
     def close(self, fd: int) -> None:
+        if self.fail_parent_close and fd == self.parent_fd:
+            self.fail_parent_close = False
+            raise OSError(errno.EIO, "injected parent descriptor cleanup failure")
         if self.fail_stage_close and fd == self.stage_fd and not self._stage_close_failed:
             self._stage_close_failed = True
             self._real.close(fd)  # type: ignore[attr-defined]
@@ -224,7 +232,7 @@ class FinderLinuxStorageTests(unittest.TestCase):
         proxy = self._proxy()
         proxy.delete_before_target_open = True
         with self.assertRaises(storage.StorageFailure) as raised:
-            storage.open_target(self.database, workspace_root=self.workspace)
+            storage.open_target(self.database, workspace_root=self.workspace, expected_exists=True)
         self.assertEqual(raised.exception.code, "target_disappeared")
         self.assertFalse(raised.exception.installed)
         self.assertFalse(self.database.exists())
@@ -277,6 +285,42 @@ class FinderLinuxStorageTests(unittest.TestCase):
         with self.assertRaises(storage.StorageFailure):
             target.verify_entry()
         target.close()
+
+    def test_stable_in_place_target_mutation_is_rejected(self) -> None:
+        self.database.write_bytes(self.image())
+        target = self._open()
+        with self.database.open("ab") as handle:
+            handle.write(b"mutation")
+        with self.assertRaises(storage.StorageFailure) as raised:
+            target.read_image()
+        self.assertEqual(raised.exception.code, "entry_substituted")
+        target.close()
+
+    def test_finder_error_with_descriptor_cleanup_failure_reports_canonical_artifact(self) -> None:
+        proxy = self._proxy()
+        proxy.fail_parent_close = True
+
+        with self.assertRaises(FinderError) as raised:
+            with storage.open_target(self.database, workspace_root=self.workspace) as target:
+                target.install_image(self.image())
+                self.assertTrue(target.installed)
+                raise FinderError(
+                    "synthetic Finder operation failed",
+                    code="synthetic_operation_failed",
+                    report={"error": "synthetic Finder operation failed"},
+                )
+
+        report = raised.exception.report
+        assert report is not None
+        self.assertTrue(report["cleanup_required"])
+        self.assertTrue(report["installed"])
+        self.assertTrue(report["database_write_performed"])
+        self.assertFalse(report["preview_only"])
+        self.assertTrue(self.database.exists())
+        self.assertEqual(["pinned-parent"], report["cleanup_artifacts"])
+        self.assertEqual(report["cleanup_artifacts"], report["artifacts"])
+        self.assertIn("synthetic Finder operation failed", report["error"])
+        self.assertIn("cleanup failure", report["error"])
 
     def test_parent_path_substitution_fails_before_install(self) -> None:
         parent = self.directory / "nested"

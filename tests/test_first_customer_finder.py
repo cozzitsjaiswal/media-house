@@ -50,18 +50,6 @@ _REPORT_KEYS = {
 }
 
 
-class FinderImageCapabilityTests(unittest.TestCase):
-    def test_missing_sqlite_image_apis_fail_closed(self) -> None:
-        if callable(getattr(sqlite3.Connection, "serialize", None)) and callable(
-            getattr(sqlite3.Connection, "deserialize", None)
-        ):
-            self.skipTest("SQLite image APIs are available")
-
-        with self.assertRaises(FinderError) as raised:
-            finder_core._memory_connection(b"image", mode="classify")
-        self.assertEqual("unsupported_sqlite_image", raised.exception.code)
-
-
 class _FaultingConnection:
     """A guarded SQLite connection that fails on a later evidence insert."""
 
@@ -178,16 +166,35 @@ class _SyntheticTarget:
         return None
 
 
+class FinderImageCapabilityTests(unittest.TestCase):
+    def test_missing_sqlite_deserialize_fails_closed(self) -> None:
+        class SerializeOnlyConnection:
+            @staticmethod
+            def serialize(*args: Any, **kwargs: Any) -> bytes:
+                return b"synthetic-image"
+
+        with patch.object(finder_core.sqlite3, "Connection", SerializeOnlyConnection):
+            with self.assertRaises(FinderError) as raised:
+                finder_core._memory_connection(b"synthetic-image", mode="classify")
+
+        self.assertEqual("unsupported_sqlite_image", raised.exception.code)
+
+    def test_missing_sqlite_serialize_fails_closed(self) -> None:
+        class DeserializeOnlyConnection:
+            @staticmethod
+            def deserialize(*args: Any, **kwargs: Any) -> None:
+                return None
+
+        target = _SyntheticTarget(None)
+        with patch.object(finder_core.sqlite3, "Connection", DeserializeOnlyConnection):
+            with self.assertRaises(FinderError) as raised:
+                finder_core._open_target_connection(target, mode="import", require_serialize=True)
+
+        self.assertEqual("unsupported_sqlite_image", raised.exception.code)
+
+
 class FirstCustomerFinderTests(unittest.TestCase):
     """Synthetic-only contract tests for the isolated First Customer Finder."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        if not (
-            callable(getattr(sqlite3.Connection, "serialize", None))
-            and callable(getattr(sqlite3.Connection, "deserialize", None))
-        ):
-            raise unittest.SkipTest("Finder image tests unavailable: SQLite image APIs are unavailable")
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="media-house-finder-")
