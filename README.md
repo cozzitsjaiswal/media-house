@@ -1,24 +1,33 @@
 # Media House revenue engine and lead discovery
 
-This workspace contains a small Python 3.11 + SQLite lead pipeline and an
+This workspace contains a small Python 3.12 + SQLite lead pipeline and an
 optional OpenStreetMap/Overpass discovery adapter. Both use only the standard
 library. The supplied documentation under `media_house_complete_documentation/`
 is retained; `docs/BASELINE_AUDIT.md` records the earlier, local-only baseline.
 
 ## Setup
 
-The supported rebuild uses Python **3.11.2**, pinned in `.python-version`, and
+The supported rebuild uses Python **3.12.3**, pinned in `.python-version`, and
 [uv](https://docs.astral.sh/uv/) **0.13.0**. The application has no runtime
 dependencies outside the Python standard library; `uv.lock` records the
 resolved project metadata and empty runtime dependency set. Docker supplies
 both pinned tools, so the container workflow is the simplest clean-machine
 rebuild.
 
+On Ubuntu or Debian, install `pip` first when `python3 -m pip --version` is
+unavailable:
+
+```bash
+sudo apt update
+sudo apt install -y python3-pip
+```
+
 From the repository root:
 
 ```bash
 python3 -m pip install --user 'uv==0.13.0'  # only if uv 0.13.0 is absent
-uv python install 3.11.2
+export PATH="$HOME/.local/bin:$PATH"  # needed if ~/.local/bin is not already on PATH
+uv python install 3.12.3
 uv sync --locked
 ```
 
