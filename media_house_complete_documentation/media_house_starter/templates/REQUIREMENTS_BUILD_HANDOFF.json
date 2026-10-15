@@ -1,0 +1,46 @@
+{
+  "task_id": "TASK-0001",
+  "client_reference": "CLIENT-0001",
+  "requirements_version": 1,
+  "requirements_hash": "REPLACE_WITH_APPROVED_HASH",
+  "approval_status": "DRAFT_NOT_APPROVED",
+  "workspace_path": "EXPLICITLY_APPROVED_WORKSPACE_PATH",
+  "allowed_operations": [
+    "read_project",
+    "write_feature_branch",
+    "run_tests",
+    "prepare_staging_build"
+  ],
+  "prohibited_operations": [
+    "send_external_messages",
+    "make_calls",
+    "spend_money",
+    "access_production_data",
+    "deploy_production",
+    "change_dns",
+    "issue_refunds"
+  ],
+  "constraints": {
+    "preferred_stack": "inspect-existing-first",
+    "cost_limit_inr": 0,
+    "synthetic_test_data_only": true
+  },
+  "required_outputs": [
+    "implementation_plan",
+    "changed_files",
+    "test_results",
+    "security_review",
+    "known_limitations",
+    "deployment_steps",
+    "rollback_plan"
+  ],
+  "stop_conditions": [
+    "requirements not approved",
+    "scope conflict",
+    "secret unavailable",
+    "paid service required",
+    "security test fails",
+    "sensitive data outside approved flow",
+    "production action needed"
+  ]
+}

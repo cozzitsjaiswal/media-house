@@ -1,0 +1,38 @@
+{
+  "version": 0.6,
+  "generator": "Synthetic offline test fixture; not live source data",
+  "elements": [
+    {
+      "type": "node",
+      "id": 101,
+      "lat": 1.04,
+      "lon": 2.04,
+      "tags": {
+        "name": "  Synthetic Café  ",
+        "amenity": "restaurant",
+        "website": "https://www.cafe.example/menu",
+        "contact:website": "https://cafe.example/about",
+        "phone": "+00 000 000 000",
+        "contact:email": "hello@cafe.example",
+        "contact:name": "Must not become a contact identity"
+      }
+    },
+    {
+      "type": "way",
+      "id": 202,
+      "center": {"lat": 1.06, "lon": 2.06},
+      "tags": {"name": "Synthetic Bakery", "shop": "bakery", "contact:phone": "+00 000 000 001"}
+    },
+    {
+      "type": "relation",
+      "id": 303,
+      "center": {"lat": 1.03, "lon": 2.03},
+      "tags": {
+        "name": "Synthetic Dining Hall",
+        "amenity": "restaurant",
+        "contact:website": "https://dining.example",
+        "contact:instagram": "https://social.example/synthetic"
+      }
+    }
+  ]
+}

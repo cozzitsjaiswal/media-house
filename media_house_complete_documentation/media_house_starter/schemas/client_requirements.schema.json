@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://media-house.invalid/schemas/client-requirements.schema.json",
+  "title": "Media House Client Requirements Handoff",
+  "type": "object",
+  "required": [
+    "client",
+    "document_version",
+    "status",
+    "business_problem",
+    "requirements",
+    "scope",
+    "data_handling",
+    "acceptance_criteria"
+  ],
+  "properties": {
+    "client": {
+      "type": "object",
+      "required": [
+        "business_name",
+        "industry"
+      ],
+      "properties": {
+        "business_name": {
+          "type": "string"
+        },
+        "industry": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "preferred_languages": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "hi",
+              "mr",
+              "en"
+            ]
+          }
+        },
+        "decision_maker_role": {
+          "type": "string"
+        }
+      }
+    },
+    "document_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "NEEDS_CLARIFICATION",
+        "READY_FOR_REVIEW",
+        "APPROVED",
+        "SUPERSEDED"
+      ]
+    },
+    "approval": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "approved_by": {
+          "type": "string"
+        },
+        "approved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "scope_version_hash": {
+          "type": "string"
+        }
+      }
+    },
+    "business_problem": {
+      "type": "object",
+      "required": [
+        "client_statement",
+        "current_workflow"
+      ],
+      "properties": {
+        "client_statement": {
+          "type": "string"
+        },
+        "current_workflow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "impact_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "existing_systems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "goals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string"
+          },
+          "baseline": {
+            "type": [
+              "string",
+              "number",
+              "null"
+            ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "number",
+              "null"
+            ]
+          },
+          "measurement_method": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "description",
+          "priority",
+          "acceptance_test"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^REQ-[0-9]{3,}$"
+          },
+          "status": {
+            "enum": [
+              "CLIENT_STATED",
+              "OBSERVED",
+              "PROPOSED",
+              "ASSUMPTION",
+              "OPEN_QUESTION",
+              "APPROVED",
+              "OUT_OF_SCOPE"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "enum": [
+              "MUST",
+              "SHOULD",
+              "COULD",
+              "WONT"
+            ]
+          },
+          "acceptance_test": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "included",
+        "excluded"
+      ],
+      "properties": {
+        "included": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "change_control": {
+          "type": "string"
+        }
+      }
+    },
+    "data_handling": {
+      "type": "object",
+      "required": [
+        "hosting_mode",
+        "data_categories",
+        "external_processors",
+        "retention",
+        "export_and_deletion"
+      ],
+      "properties": {
+        "hosting_mode": {
+          "enum": [
+            "CLIENT_HOSTED",
+            "CLIENT_LOCAL",
+            "MEDIA_HOUSE_MANAGED",
+            "HYBRID",
+            "UNDECIDED"
+          ]
+        },
+        "data_categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "external_processors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retention": {
+          "type": "string"
+        },
+        "export_and_deletion": {
+          "type": "string"
+        },
+        "health_data_in_scope": {
+          "type": "boolean"
+        }
+      }
+    },
+    "integrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "access_confirmed": {
+            "type": "boolean"
+          },
+          "failure_fallback": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ai_constraints": {
+      "type": "object",
+      "properties": {
+        "allowed_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "human_approval_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "human_handoff": {
+          "type": "string"
+        },
+        "ai_disclosure": {
+          "type": "string"
+        }
+      }
+    },
+    "commercial": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string",
+          "default": "INR"
+        },
+        "setup_fee": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "recurring_fee": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "payment_milestones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "support_scope": {
+          "type": "string"
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "steps",
+          "expected_result"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_result": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "open_questions_and_risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

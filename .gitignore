@@ -1,0 +1,30 @@
+# Local runtime state
+.media_house/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Local environment files; keep the documented template tracked.
+.env
+.env.*
+!.env.example
+
+# Python generated files
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+*$py.class
+.coverage
+.pytest_cache/
+.mypy_cache/
+build/
+
+# Project-scoped tool state and a separately managed agent-library checkout.
+# These contain generated artifacts or their own Git history, not application
+# source required to build or test Media House.
+.opencode/
+.talkcody/
+tools/

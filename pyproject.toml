@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-house-revenue-engine"
+version = "0.1.0"
+description = "Dependency-free local Media House revenue-engine and lead-discovery CLI"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.scripts]
+media-house = "media_house.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["media_house*"]

@@ -1,0 +1,4 @@
+# These Markdown documents intentionally use two trailing spaces for hard line
+# breaks. Keep that formatting without treating it as a whitespace error.
+docs/BASELINE_AUDIT.md whitespace=-trailing-space
+media_house_complete_documentation/** whitespace=-trailing-space
