@@ -14,18 +14,17 @@ resolved project metadata and empty runtime dependency set. Docker supplies
 both pinned tools, so the container workflow is the simplest clean-machine
 rebuild.
 
-On Ubuntu or Debian, install `pip` first when `python3 -m pip --version` is
-unavailable:
+On Ubuntu or Debian, install `pipx` for the pinned `uv` command-line tool:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-pip
+sudo apt install -y pipx
 ```
 
 From the repository root:
 
 ```bash
-python3 -m pip install --user 'uv==0.13.0'  # only if uv 0.13.0 is absent
+pipx install 'uv==0.13.0'  # only if uv 0.13.0 is absent
 export PATH="$HOME/.local/bin:$PATH"  # needed if ~/.local/bin is not already on PATH
 uv python install 3.12.3
 uv sync --locked
