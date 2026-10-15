@@ -26,8 +26,8 @@ From the repository root:
 ```bash
 pipx install 'uv==0.13.0'  # only if uv 0.13.0 is absent
 export PATH="$HOME/.local/bin:$PATH"  # needed if ~/.local/bin is not already on PATH
-uv python install 3.12.3
-uv sync --locked
+# Use the Ubuntu CPython build, which provides SQLite image APIs required by Finder.
+uv sync --locked --python /usr/bin/python3
 ```
 
 `uv sync --locked` fails instead of changing the lockfile when the project
