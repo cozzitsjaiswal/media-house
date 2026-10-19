@@ -51,6 +51,31 @@ def _parser() -> argparse.ArgumentParser:
     approve_parser.add_argument("draft_id", type=int)
     approve_parser.add_argument("--actor", required=True, help="human approving actor")
 
+    meeting_record = subparsers.add_parser(
+        "meeting-record", help="record human-authored notes from a completed customer meeting"
+    )
+    meeting_record.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    meeting_record.add_argument("--prospect-id", type=int, required=True)
+    meeting_record.add_argument("--meeting-at", required=True, help="meeting date/time as an ISO date or UTC datetime")
+    meeting_record.add_argument("--notes", required=True, help="human-authored meeting notes")
+    meeting_record.add_argument(
+        "--notes-permission",
+        required=True,
+        choices=("permission_granted", "not_required_confirmed"),
+        help="permission metadata for storing the notes",
+    )
+    meeting_record.add_argument(
+        "--recording-policy",
+        required=True,
+        choices=("not_recorded", "permission_granted", "permission_denied"),
+        help="recording metadata; the application never records audio",
+    )
+    meeting_record.add_argument("--actor", required=True, help="human actor recording the notes")
+
+    meeting_list = subparsers.add_parser("meeting-list", help="list recorded customer meetings as JSON")
+    meeting_list.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    meeting_list.add_argument("--prospect-id", type=int)
+
     export_parser = subparsers.add_parser("export-csv", help="export the current lead view")
     export_parser.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
     export_parser.add_argument("output", type=Path, help="output CSV path, or - for stdout")
@@ -240,6 +265,24 @@ def main(argv: list[str] | None = None) -> int:
             elif arguments.command == "approve-draft":
                 result = store.approve_draft(arguments.draft_id, human_actor=arguments.actor)
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            elif arguments.command == "meeting-record":
+                result = store.record_meeting(
+                    arguments.prospect_id,
+                    meeting_at=arguments.meeting_at,
+                    notes=arguments.notes,
+                    notes_permission=arguments.notes_permission,
+                    recording_policy=arguments.recording_policy,
+                    actor=arguments.actor,
+                )
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            elif arguments.command == "meeting-list":
+                print(
+                    json.dumps(
+                        store.list_meetings(prospect_id=arguments.prospect_id),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             elif arguments.command == "export-csv":
                 if str(arguments.output) == "-":
                     count = store.export_csv(sys.stdout)

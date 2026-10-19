@@ -75,6 +75,10 @@ EXPORT_COLUMNS = CSV_COLUMNS + (
 PERMISSION_STATUSES = frozenset(
     {"granted", "not_required_confirmed", "unknown", "withdrawn", "blocked"}
 )
+MEETING_RECORDING_POLICIES = frozenset(
+    {"not_recorded", "permission_granted", "permission_denied"}
+)
+MEETING_NOTES_PERMISSIONS = frozenset({"permission_granted", "not_required_confirmed"})
 LEAD_STATUSES = frozenset(
     {
         "new",
@@ -102,6 +106,20 @@ LEAD_STATUSES = frozenset(
 )
 
 _MACHINE_ACTOR_VALUES = frozenset({"", "unknown", "system", "automation", "automated", "ai", "agent", "bot"})
+_MEETING_ADVANCEABLE_LEAD_STATUSES = frozenset(
+    {
+        "unknown",
+        "new",
+        "researched",
+        "qualified",
+        "draft_ready",
+        "outreach_draft",
+        "approved_to_contact",
+        "contacted",
+        "replied",
+        "meeting_booked",
+    }
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -161,6 +179,22 @@ CREATE TABLE IF NOT EXISTS source_evidence (
     UNIQUE(prospect_id, source_url, observed_at, researcher)
 );
 CREATE INDEX IF NOT EXISTS source_evidence_prospect_index ON source_evidence(prospect_id);
+
+CREATE TABLE IF NOT EXISTS meetings (
+    id INTEGER PRIMARY KEY,
+    prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    meeting_at TEXT NOT NULL,
+    notes TEXT NOT NULL,
+    notes_permission TEXT NOT NULL CHECK (
+        notes_permission IN ('permission_granted', 'not_required_confirmed')
+    ),
+    recording_policy TEXT NOT NULL CHECK (
+        recording_policy IN ('not_recorded', 'permission_granted', 'permission_denied')
+    ),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS meetings_prospect_index ON meetings(prospect_id);
 
 CREATE TABLE IF NOT EXISTS outreach_drafts (
     id INTEGER PRIMARY KEY,
@@ -944,6 +978,130 @@ class MediaHouseStore:
             (prospect_id,),
         ).fetchall()
         return [_row_dict(row) for row in rows]
+
+    def record_meeting(
+        self,
+        prospect_id: int,
+        *,
+        meeting_at: str,
+        notes: str,
+        notes_permission: str,
+        recording_policy: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Record human-authored notes from a completed customer meeting.
+
+        This local milestone stores meeting metadata only.  It never records
+        audio, invokes a calendar/provider, or treats notes as approved scope.
+        Early lead states advance to ``discovery_complete``; later states are
+        preserved so a meeting cannot downgrade proposal or delivery work.
+        """
+
+        human_actor = _validate_human_actor(actor, field_name="actor")
+        try:
+            normalized_meeting_at = parse_utc_timestamp(meeting_at, field_name="meeting_at")
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+        meeting_notes = canonical_text(notes)
+        if not meeting_notes:
+            raise ValidationError("meeting notes are required")
+        notes_permission_value = normalize_token(notes_permission)
+        if notes_permission_value not in MEETING_NOTES_PERMISSIONS:
+            raise ValidationError(
+                "notes_permission must be one of: "
+                + ", ".join(sorted(MEETING_NOTES_PERMISSIONS))
+            )
+        policy = normalize_token(recording_policy)
+        if policy not in MEETING_RECORDING_POLICIES:
+            raise ValidationError(
+                "recording_policy must be one of: "
+                + ", ".join(sorted(MEETING_RECORDING_POLICIES))
+            )
+
+        self.get_prospect(prospect_id)
+        created_at = utc_now()
+        with self._transaction():
+            cursor = self.connection.execute(
+                """
+                INSERT INTO meetings
+                    (prospect_id, meeting_at, notes, notes_permission, recording_policy, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prospect_id,
+                    normalized_meeting_at,
+                    meeting_notes,
+                    notes_permission_value,
+                    policy,
+                    human_actor,
+                    created_at,
+                ),
+            )
+            meeting_id = int(cursor.lastrowid)
+
+            current = self.connection.execute(
+                "SELECT lead_status FROM prospects WHERE id = ?", (prospect_id,)
+            ).fetchone()
+            if current is None:  # pragma: no cover - get_prospect checked this before the transaction.
+                raise NotFoundError(f"prospect {prospect_id} was not found")
+            current_status = normalize_token(current["lead_status"])
+            next_status = self._lead_status_after_meeting(current_status)
+            if next_status != current_status:
+                self.connection.execute(
+                    "UPDATE prospects SET lead_status = ?, updated_at = ? WHERE id = ?",
+                    (next_status, created_at, prospect_id),
+                )
+
+            self._record_audit(
+                actor=human_actor,
+                action="meeting_recorded",
+                object_type="meeting",
+                object_id=meeting_id,
+                metadata={
+                    "meeting_id": meeting_id,
+                    "prospect_id": prospect_id,
+                    "meeting_at": normalized_meeting_at,
+                    "notes_permission": notes_permission_value,
+                    "recording_policy": policy,
+                    "lead_status_before": current_status,
+                    "lead_status_after": next_status,
+                    "notes_recorded": True,
+                },
+            )
+        return self.get_meeting(meeting_id)
+
+    @staticmethod
+    def _lead_status_after_meeting(current_status: str | None) -> str:
+        normalized = normalize_token(current_status)
+        if normalized in _MEETING_ADVANCEABLE_LEAD_STATUSES:
+            return "discovery_complete"
+        return normalized or "discovery_complete"
+
+    def get_meeting(self, meeting_id: int) -> dict[str, Any]:
+        row = self.connection.execute(
+            """
+            SELECT m.*, p.lead_status, c.name AS company_name
+            FROM meetings m
+            JOIN prospects p ON p.id = m.prospect_id
+            JOIN companies c ON c.id = p.company_id
+            WHERE m.id = ?
+            """,
+            (meeting_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"meeting {meeting_id} was not found")
+        return _row_dict(row)
+
+    def list_meetings(self, *, prospect_id: int | None = None) -> list[dict[str, Any]]:
+        if prospect_id is not None:
+            self.get_prospect(prospect_id)
+            rows = self.connection.execute(
+                "SELECT id FROM meetings WHERE prospect_id = ? ORDER BY meeting_at, id",
+                (prospect_id,),
+            ).fetchall()
+        else:
+            rows = self.connection.execute("SELECT id FROM meetings ORDER BY meeting_at, id").fetchall()
+        return [self.get_meeting(int(row["id"])) for row in rows]
 
     def _seed_default_service_packages(self) -> None:
         count = self.connection.execute("SELECT COUNT(*) AS count FROM service_packages").fetchone()["count"]

@@ -89,6 +89,10 @@ before it produces the runnable image.
   actor and a `granted` or `not_required_confirmed` channel permission. An
   approved draft still does not call a provider; its audit metadata explicitly
   records `send_performed: false`.
+- Completed customer meetings can be recorded with human-authored notes and an
+  explicit recording policy. The local app stores no audio or calendar data;
+  early lead states advance to `discovery_complete`, while later proposal or
+  delivery states are preserved.
 
 Only `discover run --confirm-network` can request data from an Overpass
 endpoint. Planning, saved-result preview, cache-only reuse and importing are
@@ -112,12 +116,23 @@ python3 -m media_house.cli --db .media_house/demo.sqlite3 draft 1 \
   --actor "founder" --channel email --content "Human-reviewed draft text"
 python3 -m media_house.cli --db .media_house/demo.sqlite3 approve-draft 1 \
   --actor "founder"
+python3 -m media_house.cli --db .media_house/demo.sqlite3 meeting-record \
+  --prospect-id 1 --meeting-at "2026-10-20T10:00:00+05:30" \
+  --notes-permission permission_granted \
+  --recording-policy not_recorded --actor "founder" \
+  --notes "Human-authored meeting notes"
+python3 -m media_house.cli --db .media_house/demo.sqlite3 meeting-list \
+  --prospect-id 1
 python3 -m media_house.cli --db .media_house/demo.sqlite3 export-csv export.csv
 ```
 
 The header-only supplied template is useful as a schema reference; an import
 row must contain the required values, and must use explicit `unknown` markers
 where contact, permission, or opt-out information is unresolved.
+Meeting recording policies are `not_recorded`, `permission_granted`, or
+`permission_denied`; the field records operator metadata only and does not
+enable recording or contact a provider. Notes require either
+`permission_granted` or `not_required_confirmed` metadata.
 
 ## Checks
 

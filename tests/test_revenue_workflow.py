@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import csv
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from media_house.errors import NotFoundError, ValidationError
+from media_house.cli import main
 from media_house.store import CSV_COLUMNS, MediaHouseStore
 
 
@@ -137,6 +141,122 @@ class RevenueWorkflowTests(unittest.TestCase):
         self.store.update_service_package(package["id"], actor="founder", active=False)
         with self.assertRaises(ValidationError):
             self.store.create_order_request(prospect["id"], package["id"], requested_by="founder")
+
+    def test_completed_meeting_is_audited_and_advances_only_early_lead_states(self) -> None:
+        prospect = self.import_lead()
+        meeting = self.store.record_meeting(
+            prospect["id"],
+            meeting_at="2026-10-20T10:00:00+05:30",
+            notes="Synthetic customer described a manual enquiry follow-up workflow.",
+            notes_permission="permission_granted",
+            recording_policy="not_recorded",
+            actor="founder",
+        )
+
+        self.assertEqual(prospect["id"], meeting["prospect_id"])
+        self.assertEqual("2026-10-20T04:30:00Z", meeting["meeting_at"])
+        self.assertEqual("permission_granted", meeting["notes_permission"])
+        self.assertEqual("not_recorded", meeting["recording_policy"])
+        self.assertEqual("founder", meeting["created_by"])
+        self.assertEqual("discovery_complete", self.store.get_prospect(prospect["id"])["lead_status"])
+        self.assertEqual([meeting["id"]], [item["id"] for item in self.store.list_meetings(prospect_id=prospect["id"])])
+
+        events = self.store.list_audit_events(action="meeting_recorded")
+        self.assertEqual(1, len(events))
+        self.assertEqual(meeting["id"], events[0]["object_id"])
+        self.assertEqual("permission_granted", events[0]["metadata"]["notes_permission"])
+        self.assertEqual("discovery_complete", events[0]["metadata"]["lead_status_after"])
+        self.assertFalse(events[0]["send_performed"])
+
+        self.store.connection.execute(
+            "UPDATE prospects SET lead_status = 'proposal_sent' WHERE id = ?", (prospect["id"],)
+        )
+        self.store.connection.commit()
+        self.store.record_meeting(
+            prospect["id"],
+            meeting_at="2026-10-21",
+            notes="Synthetic follow-up meeting; later proposal state must remain unchanged.",
+            notes_permission="not_required_confirmed",
+            recording_policy="permission_denied",
+            actor="founder",
+        )
+        self.assertEqual("proposal_sent", self.store.get_prospect(prospect["id"])["lead_status"])
+
+    def test_meeting_requires_human_actor_notes_and_explicit_recording_policy(self) -> None:
+        prospect = self.import_lead()
+        cases = (
+            {
+                "actor": "automation",
+                "notes": "Notes",
+                "notes_permission": "permission_granted",
+                "recording_policy": "not_recorded",
+            },
+            {
+                "actor": "founder",
+                "notes": "",
+                "notes_permission": "permission_granted",
+                "recording_policy": "not_recorded",
+            },
+            {
+                "actor": "founder",
+                "notes": "Notes",
+                "notes_permission": "permission_granted",
+                "recording_policy": "unknown",
+            },
+            {
+                "actor": "founder",
+                "notes": "Notes",
+                "notes_permission": "unknown",
+                "recording_policy": "not_recorded",
+            },
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ValidationError):
+                    self.store.record_meeting(
+                        prospect["id"],
+                        meeting_at="2026-10-20",
+                        **changes,
+                    )
+        self.assertEqual([], self.store.list_meetings())
+        self.assertEqual([], self.store.list_audit_events(action="meeting_recorded"))
+
+    def test_meeting_cli_records_and_lists_a_synthetic_meeting(self) -> None:
+        database = self.directory / "meeting-cli.sqlite3"
+        with MediaHouseStore(database) as store:
+            store.import_csv(write_csv(self.directory, [lead_row()]), researcher="human-researcher")
+
+        record_output = io.StringIO()
+        with redirect_stdout(record_output):
+            status = main(
+                [
+                    "--db",
+                    str(database),
+                    "meeting-record",
+                    "--prospect-id",
+                    "1",
+                    "--meeting-at",
+                    "2026-10-20T10:00:00+05:30",
+                    "--notes",
+                    "Synthetic CLI meeting notes",
+                    "--notes-permission",
+                    "permission_granted",
+                    "--recording-policy",
+                    "not_recorded",
+                    "--actor",
+                    "founder",
+                ]
+            )
+        self.assertEqual(0, status)
+        self.assertEqual("not_recorded", json.loads(record_output.getvalue())["recording_policy"])
+
+        list_output = io.StringIO()
+        with redirect_stdout(list_output):
+            status = main(["--db", str(database), "meeting-list", "--prospect-id", "1"])
+        self.assertEqual(0, status)
+        listed = json.loads(list_output.getvalue())
+        self.assertEqual(1, len(listed))
+        self.assertEqual("Synthetic CLI meeting notes", listed[0]["notes"])
 
 
 if __name__ == "__main__":
