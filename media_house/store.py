@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ from .normalization import (
     normalize_token,
     validate_source_url,
 )
+from . import requirements as requirements_contract
 from .scoring import SCORING_DISCLAIMER, calculate_fit_score
 from .timeutil import parse_optional_utc_timestamp, parse_utc_timestamp, utc_now
 
@@ -75,6 +77,10 @@ EXPORT_COLUMNS = CSV_COLUMNS + (
 PERMISSION_STATUSES = frozenset(
     {"granted", "not_required_confirmed", "unknown", "withdrawn", "blocked"}
 )
+MEETING_RECORDING_POLICIES = frozenset(
+    {"not_recorded", "permission_granted", "permission_denied"}
+)
+MEETING_NOTES_PERMISSIONS = frozenset({"permission_granted", "not_required_confirmed"})
 LEAD_STATUSES = frozenset(
     {
         "new",
@@ -102,6 +108,20 @@ LEAD_STATUSES = frozenset(
 )
 
 _MACHINE_ACTOR_VALUES = frozenset({"", "unknown", "system", "automation", "automated", "ai", "agent", "bot"})
+_MEETING_ADVANCEABLE_LEAD_STATUSES = frozenset(
+    {
+        "unknown",
+        "new",
+        "researched",
+        "qualified",
+        "draft_ready",
+        "outreach_draft",
+        "approved_to_contact",
+        "contacted",
+        "replied",
+        "meeting_booked",
+    }
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -161,6 +181,53 @@ CREATE TABLE IF NOT EXISTS source_evidence (
     UNIQUE(prospect_id, source_url, observed_at, researcher)
 );
 CREATE INDEX IF NOT EXISTS source_evidence_prospect_index ON source_evidence(prospect_id);
+
+CREATE TABLE IF NOT EXISTS meetings (
+    id INTEGER PRIMARY KEY,
+    prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    meeting_at TEXT NOT NULL,
+    notes TEXT NOT NULL,
+    notes_permission TEXT NOT NULL CHECK (
+        notes_permission IN ('permission_granted', 'not_required_confirmed')
+    ),
+    recording_policy TEXT NOT NULL CHECK (
+        recording_policy IN ('not_recorded', 'permission_granted', 'permission_denied')
+    ),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS meetings_prospect_index ON meetings(prospect_id);
+
+CREATE TABLE IF NOT EXISTS requirements_documents (
+    id INTEGER PRIMARY KEY,
+    prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE RESTRICT,
+    meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE RESTRICT,
+    document_version INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('DRAFT', 'NEEDS_CLARIFICATION', 'READY_FOR_REVIEW', 'APPROVED', 'SUPERSEDED')
+    ),
+    content_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    approved_by TEXT,
+    approved_at TEXT,
+    approved_hash TEXT,
+    supersedes_document_id INTEGER REFERENCES requirements_documents(id) ON DELETE RESTRICT,
+    UNIQUE(meeting_id, document_version)
+);
+CREATE INDEX IF NOT EXISTS requirements_documents_prospect_index ON requirements_documents(prospect_id);
+CREATE INDEX IF NOT EXISTS requirements_documents_meeting_index ON requirements_documents(meeting_id);
+
+CREATE TRIGGER IF NOT EXISTS prevent_prospect_delete_with_requirements_history
+BEFORE DELETE ON prospects
+FOR EACH ROW
+WHEN EXISTS (
+    SELECT 1 FROM requirements_documents WHERE prospect_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'cannot delete prospect with requirements history');
+END;
 
 CREATE TABLE IF NOT EXISTS outreach_drafts (
     id INTEGER PRIMARY KEY,
@@ -505,11 +572,10 @@ class MediaHouseStore:
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             yield
-        except Exception:
+            self.connection.commit()
+        except BaseException:
             self.connection.rollback()
             raise
-        else:
-            self.connection.commit()
 
     def _read_csv(self, path: str | os.PathLike[str], *, researcher: str) -> list[ParsedLead]:
         actor = canonical_text(researcher)
@@ -944,6 +1010,567 @@ class MediaHouseStore:
             (prospect_id,),
         ).fetchall()
         return [_row_dict(row) for row in rows]
+
+    def record_meeting(
+        self,
+        prospect_id: int,
+        *,
+        meeting_at: str,
+        notes: str,
+        notes_permission: str,
+        recording_policy: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Record human-authored notes from a completed customer meeting.
+
+        This local milestone stores meeting metadata only.  It never records
+        audio, invokes a calendar/provider, or treats notes as approved scope.
+        Early lead states advance to ``discovery_complete``; later states are
+        preserved so a meeting cannot downgrade proposal or delivery work.
+        """
+
+        human_actor = _validate_human_actor(actor, field_name="actor")
+        try:
+            normalized_meeting_at = parse_utc_timestamp(meeting_at, field_name="meeting_at")
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+        meeting_notes = canonical_text(notes)
+        if not meeting_notes:
+            raise ValidationError("meeting notes are required")
+        notes_permission_value = normalize_token(notes_permission)
+        if notes_permission_value not in MEETING_NOTES_PERMISSIONS:
+            raise ValidationError(
+                "notes_permission must be one of: "
+                + ", ".join(sorted(MEETING_NOTES_PERMISSIONS))
+            )
+        policy = normalize_token(recording_policy)
+        if policy not in MEETING_RECORDING_POLICIES:
+            raise ValidationError(
+                "recording_policy must be one of: "
+                + ", ".join(sorted(MEETING_RECORDING_POLICIES))
+            )
+
+        self.get_prospect(prospect_id)
+        created_at = utc_now()
+        with self._transaction():
+            cursor = self.connection.execute(
+                """
+                INSERT INTO meetings
+                    (prospect_id, meeting_at, notes, notes_permission, recording_policy, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prospect_id,
+                    normalized_meeting_at,
+                    meeting_notes,
+                    notes_permission_value,
+                    policy,
+                    human_actor,
+                    created_at,
+                ),
+            )
+            meeting_id = int(cursor.lastrowid)
+
+            current = self.connection.execute(
+                "SELECT lead_status FROM prospects WHERE id = ?", (prospect_id,)
+            ).fetchone()
+            if current is None:  # pragma: no cover - get_prospect checked this before the transaction.
+                raise NotFoundError(f"prospect {prospect_id} was not found")
+            current_status = normalize_token(current["lead_status"])
+            next_status = self._lead_status_after_meeting(current_status)
+            if next_status != current_status:
+                self.connection.execute(
+                    "UPDATE prospects SET lead_status = ?, updated_at = ? WHERE id = ?",
+                    (next_status, created_at, prospect_id),
+                )
+
+            self._record_audit(
+                actor=human_actor,
+                action="meeting_recorded",
+                object_type="meeting",
+                object_id=meeting_id,
+                metadata={
+                    "meeting_id": meeting_id,
+                    "prospect_id": prospect_id,
+                    "meeting_at": normalized_meeting_at,
+                    "notes_permission": notes_permission_value,
+                    "recording_policy": policy,
+                    "lead_status_before": current_status,
+                    "lead_status_after": next_status,
+                    "notes_recorded": True,
+                },
+            )
+        return self.get_meeting(meeting_id)
+
+    @staticmethod
+    def _lead_status_after_meeting(current_status: str | None) -> str:
+        normalized = normalize_token(current_status)
+        if normalized in _MEETING_ADVANCEABLE_LEAD_STATUSES:
+            return "discovery_complete"
+        return normalized or "discovery_complete"
+
+    def get_meeting(self, meeting_id: int) -> dict[str, Any]:
+        row = self.connection.execute(
+            """
+            SELECT m.*, p.lead_status, c.name AS company_name
+            FROM meetings m
+            JOIN prospects p ON p.id = m.prospect_id
+            JOIN companies c ON c.id = p.company_id
+            WHERE m.id = ?
+            """,
+            (meeting_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"meeting {meeting_id} was not found")
+        return _row_dict(row)
+
+    def list_meetings(self, *, prospect_id: int | None = None) -> list[dict[str, Any]]:
+        if prospect_id is not None:
+            self.get_prospect(prospect_id)
+            rows = self.connection.execute(
+                "SELECT id FROM meetings WHERE prospect_id = ? ORDER BY meeting_at, id",
+                (prospect_id,),
+            ).fetchall()
+        else:
+            rows = self.connection.execute("SELECT id FROM meetings ORDER BY meeting_at, id").fetchall()
+        return [self.get_meeting(int(row["id"])) for row in rows]
+
+    def capture_requirements(
+        self,
+        meeting_id: int,
+        document: Mapping[str, object],
+        *,
+        actor: str,
+        status: str | None = None,
+        supersedes_document_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Capture a versioned requirements draft tied to a completed meeting."""
+
+        human_actor = _validate_human_actor(actor, field_name="actor")
+        if not isinstance(document, Mapping):
+            raise ValidationError("requirements document must be an object")
+        if supersedes_document_id is not None and (
+            isinstance(supersedes_document_id, bool) or not isinstance(supersedes_document_id, int)
+        ):
+            raise ValidationError("supersedes_document_id must be an integer")
+        for field in ("document_version", "meeting_id", "prospect_id"):
+            if field in document and (isinstance(document[field], bool) or not isinstance(document[field], int)):
+                raise ValidationError(f"{field} must be an integer")
+        meeting = self.get_meeting(meeting_id)
+        prospect = self.get_prospect(int(meeting["prospect_id"]))
+        requested_status = status if status is not None else document.get("status", "DRAFT")
+        if not isinstance(requested_status, str):
+            raise ValidationError("requirements status must be a string")
+        requested_status = canonical_text(requested_status)
+        if "status" in document and document["status"] != requested_status:
+            raise ValidationError("document status and requested status do not match")
+        if "approval" in document and document["approval"] is not None:
+            raise ValidationError("requirements capture cannot include approval metadata")
+        if "meeting_id" in document and document["meeting_id"] != meeting_id:
+            raise ValidationError("document meeting_id does not match the completed meeting")
+        if "prospect_id" in document and document["prospect_id"] != int(meeting["prospect_id"]):
+            raise ValidationError("document prospect_id does not match the completed meeting's prospect")
+
+        client = document.get("client")
+        if isinstance(client, dict) and isinstance(client.get("business_name"), str):
+            if normalize_name(client["business_name"]) != normalize_name(prospect["company_name"]):
+                raise ValidationError("client.business_name must match the linked prospect")
+
+        supplied_version = document.get("document_version")
+        with self._transaction():
+            latest = self.connection.execute(
+                "SELECT COALESCE(MAX(document_version), 0) AS version "
+                "FROM requirements_documents WHERE meeting_id = ?",
+                (meeting_id,),
+            ).fetchone()
+            next_version = int(latest["version"]) + 1
+            if supplied_version is not None and supplied_version != next_version:
+                raise ValidationError(f"document_version must be the next version ({next_version})")
+
+            approved = self.connection.execute(
+                "SELECT id, document_version FROM requirements_documents WHERE meeting_id = ? "
+                "AND status = 'APPROVED' ORDER BY document_version DESC LIMIT 1",
+                (meeting_id,),
+            ).fetchone()
+            if approved is not None and supersedes_document_id is None:
+                raise ValidationError("an approved baseline requires an explicit superseding version")
+            if supersedes_document_id is not None:
+                if approved is None or int(approved["id"]) != supersedes_document_id:
+                    raise ValidationError("supersedes_document_id must identify the current approved baseline")
+
+            prepared = dict(document)
+            prepared["meeting_id"] = meeting_id
+            prepared["prospect_id"] = int(meeting["prospect_id"])
+            prepared["document_version"] = next_version
+            prepared["status"] = requested_status
+            prepared["approval"] = None
+            validated = requirements_contract.validate_document(
+                prepared,
+                expected_meeting_id=meeting_id,
+                expected_prospect_id=int(meeting["prospect_id"]),
+                require_ready_content=requested_status == "READY_FOR_REVIEW",
+                allow_approved=False,
+            )
+            digest = requirements_contract.content_hash(validated)
+            created_at = utc_now()
+            cursor = self.connection.execute(
+                """
+                INSERT INTO requirements_documents
+                    (prospect_id, meeting_id, document_version, status, content_json,
+                     content_hash, created_by, created_at, supersedes_document_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(meeting["prospect_id"]),
+                    meeting_id,
+                    next_version,
+                    requested_status,
+                    requirements_contract.canonical_json(validated),
+                    digest,
+                    human_actor,
+                    created_at,
+                    supersedes_document_id,
+                ),
+            )
+            document_id = int(cursor.lastrowid)
+            self._record_audit(
+                actor=human_actor,
+                action="requirements_created",
+                object_type="requirements_document",
+                object_id=document_id,
+                metadata={
+                    "document_id": document_id,
+                    "meeting_id": meeting_id,
+                    "prospect_id": int(meeting["prospect_id"]),
+                    "document_version": next_version,
+                    "status": requested_status,
+                    "content_hash": digest,
+                    "supersedes_document_id": supersedes_document_id,
+                },
+            )
+            if supersedes_document_id is not None:
+                self._record_audit(
+                    actor=human_actor,
+                    action="requirements_superseding_created",
+                    object_type="requirements_document",
+                    object_id=document_id,
+                    metadata={
+                        "document_id": document_id,
+                        "supersedes_document_id": supersedes_document_id,
+                        "document_version": next_version,
+                    },
+                )
+        return self.get_requirements_document(document_id)
+
+    def get_requirements_document(self, document_id: int) -> dict[str, Any]:
+        row = self.connection.execute(
+            """
+            SELECT r.*, m.meeting_at, c.name AS company_name
+            FROM requirements_documents r
+            JOIN meetings m ON m.id = r.meeting_id
+            JOIN prospects p ON p.id = r.prospect_id
+            JOIN companies c ON c.id = p.company_id
+            WHERE r.id = ?
+            """,
+            (document_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"requirements document {document_id} was not found")
+        result = _row_dict(row)
+        try:
+            result["document"] = json.loads(result.pop("content_json"))
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ValidationError(f"requirements document {document_id} contains invalid JSON") from exc
+        self._validate_requirements_record_integrity(result)
+        return result
+
+    @staticmethod
+    def _validate_requirements_record_integrity(
+        record: Mapping[str, Any], *, require_ready_content: bool = False, allow_approved: bool = True
+    ) -> dict[str, object]:
+        """Validate stored linkage, lifecycle metadata, and both content hashes."""
+
+        document = requirements_contract.validate_document(
+            record["document"],
+            expected_meeting_id=int(record["meeting_id"]),
+            expected_prospect_id=int(record["prospect_id"]),
+            require_ready_content=require_ready_content,
+            allow_approved=allow_approved,
+        )
+        if document.get("status") != record["status"]:
+            raise ValidationError("requirements document lifecycle status does not match its stored record")
+        if document["document_version"] != record["document_version"]:
+            raise ValidationError("requirements document version does not match its stored record")
+
+        digest = requirements_contract.content_hash(document)
+        if digest != record["content_hash"]:
+            raise ValidationError("requirements document content hash does not match its stored version")
+
+        approval = document.get("approval")
+        approved_columns = (record["approved_by"], record["approved_at"], record["approved_hash"])
+        if record["status"] in {"APPROVED", "SUPERSEDED"}:
+            if not isinstance(approval, dict):  # pragma: no cover - validate_document checks this first.
+                raise ValidationError("approved requirements must contain approval metadata")
+            if approval.get("scope_version_hash") != digest:
+                raise ValidationError("requirements approval hash does not match its stored version")
+            if approval.get("approved_by") != record["approved_by"]:
+                raise ValidationError("requirements approval actor does not match its stored record")
+            if approval.get("approved_at") != record["approved_at"]:
+                raise ValidationError("requirements approval timestamp does not match its stored record")
+            if record["approved_hash"] != digest:
+                raise ValidationError("requirements approved hash does not match its stored version")
+        elif approval is not None or any(value is not None for value in approved_columns):
+            raise ValidationError("unapproved requirements contain approval metadata")
+        return document
+
+    def list_requirements_documents(
+        self,
+        *,
+        prospect_id: int | None = None,
+        meeting_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if prospect_id is not None:
+            self.get_prospect(prospect_id)
+        if meeting_id is not None:
+            meeting = self.get_meeting(meeting_id)
+            if prospect_id is not None and int(meeting["prospect_id"]) != prospect_id:
+                raise ValidationError("meeting_id does not belong to prospect_id")
+        clauses: list[str] = []
+        values: list[int] = []
+        if prospect_id is not None:
+            clauses.append("prospect_id = ?")
+            values.append(prospect_id)
+        if meeting_id is not None:
+            clauses.append("meeting_id = ?")
+            values.append(meeting_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self.connection.execute(
+            f"SELECT id FROM requirements_documents{where} ORDER BY meeting_id, document_version, id",
+            tuple(values),
+        ).fetchall()
+        return [self.get_requirements_document(int(row["id"])) for row in rows]
+
+    def export_requirements(
+        self,
+        document_id: int,
+        destination: str | os.PathLike[str] | TextIO,
+        *,
+        actor: str,
+    ) -> dict[str, object]:
+        """Commit an attributed export audit before delivering the document."""
+
+        if not isinstance(actor, str):
+            raise ValidationError("actor must be a non-empty human actor")
+        human_actor = _validate_human_actor(actor, field_name="actor")
+        try:
+            human_actor.encode("utf-8")
+        except UnicodeError as exc:
+            raise ValidationError("actor must contain valid UTF-8 text") from exc
+        record = self.get_requirements_document(document_id)
+        document = self._validate_requirements_record_integrity(record)
+        digest = requirements_contract.content_hash(document)
+        try:
+            text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
+            payload = text.encode("utf-8")
+        except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+            raise ValidationError(f"requirements export could not be serialized: {exc}") from exc
+        if hasattr(destination, "write"):
+            handle = destination  # type: ignore[assignment]
+            destination_label = "-"
+            destination_type = "stream"
+        else:
+            path = Path(destination)  # type: ignore[arg-type]
+            destination_label = str(path)
+            destination_type = "file"
+            sqlite_filename = next(
+                row["file"] for row in self.connection.execute("PRAGMA database_list") if row["name"] == "main"
+            )
+            try:
+                if sqlite_filename:
+                    sqlite_path = Path(sqlite_filename)
+                    # SQLite can retain a symlink spelling for its companion files.
+                    protected_paths = {
+                        Path(f"{filename}{suffix}").resolve()
+                        for filename in (sqlite_path, sqlite_path.resolve())
+                        for suffix in ("", "-wal", "-shm", "-journal")
+                    }
+                    if path.resolve() in protected_paths:
+                        raise ValidationError(
+                            "requirements export destination must not overwrite the active SQLite database or its companion files"
+                        )
+            except RuntimeError as exc:
+                raise ValidationError(f"requirements export destination could not be resolved: {exc}") from exc
+        staged_path: Path | None = None
+        audit_committed = False
+        try:
+            if destination_type == "file":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=path.parent, prefix=".requirements-", suffix=".tmp", delete=False
+                ) as staged:
+                    staged_path = Path(staged.name)
+                    if staged.write(payload) != len(payload):
+                        raise OSError("short write while staging requirements export")
+                    staged.flush()
+                    os.fsync(staged.fileno())
+            with self._transaction():
+                self._record_audit(
+                    actor=human_actor,
+                    action="requirements_exported",
+                    object_type="requirements_document",
+                    object_id=document_id,
+                    metadata={
+                        "document_id": document_id,
+                        "document_version": record["document_version"],
+                        "status": record["status"],
+                        "content_hash": digest,
+                        "created_by": record["created_by"],
+                        "destination": destination_label,
+                        "destination_type": destination_type,
+                        "delivery_confirmed": False,
+                        "delivery_order": "audit_before_delivery",
+                    },
+                )
+            audit_committed = True
+            try:
+                if destination_type == "stream":
+                    if handle.write(text) != len(text):
+                        raise OSError("short write while delivering requirements export")
+                    handle.flush()
+                else:
+                    os.replace(staged_path, path)
+                    staged_path = None
+            except Exception as exc:
+                raise OSError(f"requirements export audit committed but delivery failed/unconfirmed: {exc}") from exc
+        finally:
+            if staged_path is not None:
+                try:
+                    staged_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    state = "audit committed but delivery failed/unconfirmed; " if audit_committed else ""
+                    raise OSError(
+                        f"requirements export {state}cleanup failed; owned staged file may remain at "
+                        f"{staged_path}; manual cleanup may be required: {exc}"
+                    ) from exc
+        return document
+
+    def approve_requirements(
+        self,
+        document_id: int,
+        *,
+        actor: str,
+        approved_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Explicitly approve a READY_FOR_REVIEW baseline without mutation."""
+
+        try:
+            human_actor = _validate_human_actor(actor, field_name="approver")
+        except ValidationError as exc:
+            raise ApprovalError(str(exc)) from exc
+
+        with self._transaction():
+            try:
+                record = self.get_requirements_document(document_id)
+                if record["status"] != "READY_FOR_REVIEW":
+                    raise ApprovalError("only READY_FOR_REVIEW requirements can be approved")
+                document = self._validate_requirements_record_integrity(
+                    record, require_ready_content=True, allow_approved=False
+                )
+                digest = requirements_contract.content_hash(document)
+                timestamp = (
+                    requirements_contract.normalize_approval_timestamp(approved_at)
+                    if approved_at is not None
+                    else utc_now()
+                )
+                approved_document = requirements_contract.approve_document(
+                    document,
+                    actor=human_actor,
+                    approved_at=timestamp,
+                    scope_hash=digest,
+                )
+            except ValidationError as exc:
+                raise ApprovalError(str(exc)) from exc
+
+            approved = self.connection.execute(
+                "SELECT id FROM requirements_documents WHERE meeting_id = ? AND status = 'APPROVED' "
+                "ORDER BY document_version DESC LIMIT 1",
+                (record["meeting_id"],),
+            ).fetchone()
+            supersedes_id = record["supersedes_document_id"]
+            if approved is not None and supersedes_id is None:
+                raise ApprovalError("an approved baseline requires an explicit superseding version")
+            if supersedes_id is not None:
+                if approved is None or approved["id"] != supersedes_id:
+                    raise ApprovalError("supersedes_document_id must identify the current approved baseline")
+                try:
+                    previous = self.get_requirements_document(int(supersedes_id))
+                except ValidationError as exc:
+                    raise ApprovalError(str(exc)) from exc
+                if (
+                    previous["meeting_id"] != record["meeting_id"]
+                    or previous["prospect_id"] != record["prospect_id"]
+                    or previous["document_version"] >= record["document_version"]
+                ):
+                    raise ApprovalError("superseded requirements must belong to the same meeting and prospect and be older")
+
+            updated = self.connection.execute(
+                """
+                UPDATE requirements_documents
+                SET status = 'APPROVED', content_json = ?, approved_by = ?,
+                    approved_at = ?, approved_hash = ?
+                WHERE id = ? AND status = 'READY_FOR_REVIEW' AND content_hash = ?
+                """,
+                (
+                    requirements_contract.canonical_json(approved_document),
+                    human_actor,
+                    timestamp,
+                    digest,
+                    document_id,
+                    digest,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ApprovalError("requirements document changed or was already approved; reload and retry")
+            if supersedes_id is not None:
+                previous_document = dict(previous["document"])
+                previous_document["status"] = "SUPERSEDED"
+                previous_document = requirements_contract.validate_document(
+                    previous_document,
+                    expected_meeting_id=int(previous["meeting_id"]),
+                    expected_prospect_id=int(previous["prospect_id"]),
+                    allow_approved=True,
+                )
+                self.connection.execute(
+                    "UPDATE requirements_documents SET status = 'SUPERSEDED', content_json = ? WHERE id = ?",
+                    (requirements_contract.canonical_json(previous_document), int(supersedes_id)),
+                )
+                self._record_audit(
+                    actor=human_actor,
+                    action="requirements_superseded",
+                    object_type="requirements_document",
+                    object_id=int(supersedes_id),
+                    metadata={
+                        "superseded_document_id": int(supersedes_id),
+                        "superseding_document_id": document_id,
+                        "superseding_version": record["document_version"],
+                    },
+                )
+            self._record_audit(
+                actor=human_actor,
+                action="requirements_approved",
+                object_type="requirements_document",
+                object_id=document_id,
+                metadata={
+                    "document_id": document_id,
+                    "document_version": record["document_version"],
+                    "approved_by": human_actor,
+                    "approved_at": timestamp,
+                    "scope_version_hash": digest,
+                },
+            )
+        return self.get_requirements_document(document_id)
 
     def _seed_default_service_packages(self) -> None:
         count = self.connection.execute("SELECT COUNT(*) AS count FROM service_packages").fetchone()["count"]

@@ -1,8 +1,11 @@
 .git/
+.claude/
 .opencode/
+opencode.jsonc
 .talkcody/
 .media_house/
 .venv/
+.venv-root-python-backup/
 __pycache__/
 *.py[cod]
 .coverage
@@ -14,7 +17,10 @@ build/
 .env.*
 !.env.example
 docs/
-media_house_complete_documentation/
+media_house_complete_documentation/**
+!media_house_complete_documentation/media_house_starter/
+!media_house_complete_documentation/media_house_starter/schemas/
+!media_house_complete_documentation/media_house_starter/schemas/client_requirements.schema.json
 tools/
 *.sqlite
 *.sqlite3

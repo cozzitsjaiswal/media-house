@@ -9,7 +9,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .errors import MediaHouseError
+from .errors import MediaHouseError, ValidationError
 from .store import MediaHouseStore
 from .discovery import BoundingBox, CategoryFilter, DiscoveryConfig, DiscoveryError, build_plan
 from .discovery.config import DEFAULT_ENDPOINT
@@ -19,6 +19,25 @@ from .finder import FinderError, classify_saved_input, import_saved_input
 
 
 DEFAULT_DATABASE = os.environ.get("MEDIA_HOUSE_DB", ".media_house/media_house.sqlite3")
+MAX_REQUIREMENTS_INPUT_BYTES = 2 * 1024 * 1024
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
+def _load_requirements_document(path: Path) -> dict[str, object]:
+    try:
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_REQUIREMENTS_INPUT_BYTES + 1)
+        if len(payload) > MAX_REQUIREMENTS_INPUT_BYTES:
+            raise ValueError(f"requirements JSON exceeds the {MAX_REQUIREMENTS_INPUT_BYTES}-byte limit")
+        value = json.loads(payload, parse_constant=_reject_json_constant)
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+        raise ValidationError(f"requirements JSON could not be read: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValidationError("requirements JSON must contain an object")
+    return value
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -50,6 +69,70 @@ def _parser() -> argparse.ArgumentParser:
     approve_parser.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
     approve_parser.add_argument("draft_id", type=int)
     approve_parser.add_argument("--actor", required=True, help="human approving actor")
+
+    meeting_record = subparsers.add_parser(
+        "meeting-record", help="record human-authored notes from a completed customer meeting"
+    )
+    meeting_record.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    meeting_record.add_argument("--prospect-id", type=int, required=True)
+    meeting_record.add_argument("--meeting-at", required=True, help="meeting date/time as an ISO date or UTC datetime")
+    meeting_record.add_argument("--notes", required=True, help="human-authored meeting notes")
+    meeting_record.add_argument(
+        "--notes-permission",
+        required=True,
+        choices=("permission_granted", "not_required_confirmed"),
+        help="permission metadata for storing the notes",
+    )
+    meeting_record.add_argument(
+        "--recording-policy",
+        required=True,
+        choices=("not_recorded", "permission_granted", "permission_denied"),
+        help="recording metadata; the application never records audio",
+    )
+    meeting_record.add_argument("--actor", required=True, help="human actor recording the notes")
+
+    meeting_list = subparsers.add_parser("meeting-list", help="list recorded customer meetings as JSON")
+    meeting_list.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    meeting_list.add_argument("--prospect-id", type=int)
+
+    requirements_capture = subparsers.add_parser(
+        "requirements-capture", help="capture a versioned requirements draft from a completed meeting"
+    )
+    requirements_capture.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    requirements_capture.add_argument("meeting_id", type=int)
+    requirements_capture.add_argument("json_path", type=Path)
+    requirements_capture.add_argument("--actor", required=True, help="human actor capturing the requirements")
+    requirements_capture.add_argument(
+        "--status",
+        choices=("DRAFT", "NEEDS_CLARIFICATION", "READY_FOR_REVIEW"),
+        default="DRAFT",
+    )
+    requirements_capture.add_argument("--supersedes-id", type=int)
+
+    requirements_list = subparsers.add_parser("requirements-list", help="list requirements document versions")
+    requirements_list.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    requirements_list.add_argument("--prospect-id", type=int)
+    requirements_list.add_argument("--meeting-id", type=int)
+
+    requirements_show = subparsers.add_parser("requirements-show", help="show one requirements document version")
+    requirements_show.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    requirements_show.add_argument("document_id", type=int)
+
+    requirements_export = subparsers.add_parser(
+        "requirements-export", help="export one schema-compatible requirements JSON document"
+    )
+    requirements_export.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    requirements_export.add_argument("document_id", type=int)
+    requirements_export.add_argument("output", type=Path, help="JSON output path, or - for stdout")
+    requirements_export.add_argument("--actor", required=True, help="human actor exporting the requirements")
+
+    requirements_approve = subparsers.add_parser(
+        "requirements-approve", help="explicitly approve a READY_FOR_REVIEW requirements baseline"
+    )
+    requirements_approve.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    requirements_approve.add_argument("document_id", type=int)
+    requirements_approve.add_argument("--actor", required=True, help="human approving actor")
+    requirements_approve.add_argument("--approved-at", help="optional ISO datetime for deterministic audit metadata")
 
     export_parser = subparsers.add_parser("export-csv", help="export the current lead view")
     export_parser.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
@@ -240,6 +323,67 @@ def main(argv: list[str] | None = None) -> int:
             elif arguments.command == "approve-draft":
                 result = store.approve_draft(arguments.draft_id, human_actor=arguments.actor)
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            elif arguments.command == "meeting-record":
+                result = store.record_meeting(
+                    arguments.prospect_id,
+                    meeting_at=arguments.meeting_at,
+                    notes=arguments.notes,
+                    notes_permission=arguments.notes_permission,
+                    recording_policy=arguments.recording_policy,
+                    actor=arguments.actor,
+                )
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            elif arguments.command == "meeting-list":
+                print(
+                    json.dumps(
+                        store.list_meetings(prospect_id=arguments.prospect_id),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            elif arguments.command == "requirements-capture":
+                result = store.capture_requirements(
+                    arguments.meeting_id,
+                    _load_requirements_document(arguments.json_path),
+                    actor=arguments.actor,
+                    status=arguments.status,
+                    supersedes_document_id=arguments.supersedes_id,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+            elif arguments.command == "requirements-list":
+                print(
+                    json.dumps(
+                        store.list_requirements_documents(
+                            prospect_id=arguments.prospect_id,
+                            meeting_id=arguments.meeting_id,
+                        ),
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            elif arguments.command == "requirements-show":
+                print(
+                    json.dumps(
+                        store.get_requirements_document(arguments.document_id),
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            elif arguments.command == "requirements-export":
+                if str(arguments.output) == "-":
+                    store.export_requirements(arguments.document_id, sys.stdout, actor=arguments.actor)
+                else:
+                    store.export_requirements(arguments.document_id, arguments.output, actor=arguments.actor)
+                    print(json.dumps({"exported": True, "output": str(arguments.output)}, sort_keys=True), file=sys.stderr)
+            elif arguments.command == "requirements-approve":
+                result = store.approve_requirements(
+                    arguments.document_id,
+                    actor=arguments.actor,
+                    approved_at=arguments.approved_at,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
             elif arguments.command == "export-csv":
                 if str(arguments.output) == "-":
                     count = store.export_csv(sys.stdout)
@@ -294,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(store.list_payment_requests(order_id=arguments.order_id), ensure_ascii=False, indent=2))
             else:  # pragma: no cover - argparse enforces the command set.
                 parser.error(f"unknown command {arguments.command}")
-    except (MediaHouseError, OSError, sqlite3.Error) as exc:
+    except (MediaHouseError, OSError, sqlite3.Error, OverflowError, UnicodeError) as exc:
         if isinstance(exc, FinderError) and exc.report is not None:
             print(json.dumps(exc.report, ensure_ascii=False, indent=2, sort_keys=True))
         code = f" [{exc.code}]" if isinstance(exc, (DiscoveryError, FinderError)) else ""

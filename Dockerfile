@@ -14,6 +14,7 @@ COPY --from=uv /uv /uvx /bin/
 COPY .python-version pyproject.toml uv.lock README.md ./
 COPY media_house ./media_house
 COPY tests ./tests
+COPY media_house_complete_documentation/media_house_starter/schemas/client_requirements.schema.json ./media_house_complete_documentation/media_house_starter/schemas/client_requirements.schema.json
 
 RUN uv sync --locked --no-dev --no-editable \
     && python -m unittest discover -s tests -v \
