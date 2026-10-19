@@ -101,6 +101,8 @@ def import_discovery(
     researcher: str | None = None,
     source_ids: list[str] | None = None,
 ) -> dict[str, object]:
+    """Preview selected discovery records, or atomically import them when confirmed."""
+
     preview = preview_import(result, source_ids=source_ids)
     if not confirm_import:
         return preview

@@ -21,6 +21,7 @@ from tests.test_requirements import lead_row, requirements_document, write_csv
 
 
 def seed_requirements(store, directory, *, ready=False):
+    """Seed a store with a prospect, meeting, and captured requirements document."""
     store.import_csv(write_csv(directory, [lead_row()]), researcher="researcher")
     meeting = store.record_meeting(
         store.list_prospects()[0]["id"], meeting_at="2026-10-20T12:00:00Z",
@@ -65,12 +66,16 @@ os._exit(0)  # Deliberately bypass connection close/checkpoint and interpreter c
 
 
 class RequirementsPersistenceSafetyTests(unittest.TestCase):
+    """Tests that exports and approvals never corrupt or bypass SQLite persistence safety."""
+
     def setUp(self):
+        """Create a temporary directory for per-test database fixtures."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
 
     def assert_rejected_without_effects(self, store, record, destination):
+        """Assert exporting to the given destination is rejected as an active SQLite path with no side effects."""
         before = tuple(store.connection.iterdump())
         names = set(self.directory.rglob("*"))
         link = os.readlink(destination) if destination.is_symlink() else None
@@ -90,6 +95,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
         self.assertEqual(contents, destination.read_bytes() if destination.is_file() else None)
 
     def test_cwd_change_cannot_replace_connected_database(self):
+        """Verify changing the working directory cannot be used to export over the connected database."""
         opened, elsewhere = self.directory / "opened", self.directory / "elsewhere"
         opened.mkdir()
         elsewhere.mkdir()
@@ -104,6 +110,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
             self.assertEqual(1, len(reopened.list_prospects()))
 
     def test_active_main_and_companion_paths_and_aliases_are_rejected(self):
+        """Verify exporting to the main database file, its WAL/SHM/journal companions, or symlink aliases is rejected."""
         for alias in (False, True):
             for suffix in ("", "-wal", "-shm", "-journal"):
                 with self.subTest(alias=alias, suffix=suffix):
@@ -122,6 +129,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
                         self.assert_rejected_without_effects(store, record, destination)
 
     def test_symlink_opened_database_protects_sqlite_and_resolved_companion_names(self):
+        """Verify a database opened through a symlink still protects both the linked and resolved companion paths."""
         for resolved in (False, True):
             for suffix in ("", "-wal", "-shm", "-journal"):
                 with self.subTest(resolved=resolved, suffix=suffix):
@@ -145,6 +153,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
                         self.assert_rejected_without_effects(store, record, Path(str(basis) + suffix))
 
     def test_cwd_change_allows_unrelated_same_named_files_and_streams(self):
+        """Verify exporting to unrelated files that merely share the database's relative name or to streams succeeds."""
         opened, elsewhere = self.directory / "opened", self.directory / "elsewhere"
         opened.mkdir()
         elsewhere.mkdir()
@@ -170,6 +179,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
             self.assertEqual(record, reopened.get_requirements_document(record["id"]))
 
     def test_wal_recovery_after_companion_export_and_abrupt_exit(self):
+        """Verify committed WAL data survives a rejected companion export followed by an abrupt process exit."""
         for symlink in (False, True):
             with self.subTest(symlink=symlink):
                 directory = self.directory / f"case-{symlink}"
@@ -207,6 +217,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
                     self.assertEqual(report["record"], reopened.get_requirements_document(report["record"]["id"]))
 
     def test_cancelled_superseding_approval_rolls_back_and_can_retry(self):
+        """Verify a cancellation raised mid-approval rolls back superseding fully and allows a later successful retry."""
         for cancellation in (KeyboardInterrupt("injected cancellation"), SystemExit("injected exit")):
             with self.subTest(cancellation=type(cancellation).__name__):
                 directory = self.directory / type(cancellation).__name__
@@ -225,6 +236,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
                     original_audit = store._record_audit
 
                     def cancel_after_supersession(**kwargs):
+                        """Perform the real audit insert, then raise the injected cancellation after superseding."""
                         original_audit(**kwargs)
                         if kwargs["action"] == "requirements_superseded":
                             self.assertTrue(store.connection.in_transaction)
@@ -255,6 +267,7 @@ class RequirementsPersistenceSafetyTests(unittest.TestCase):
                     self.assertEqual(1, len(reopened.list_audit_events(action="requirements_superseded")))
 
     def test_failed_begin_does_not_roll_back_caller_owned_transaction(self):
+        """Verify a failed approval inside a caller-owned transaction leaves that transaction intact for the caller."""
         database = self.directory / "synthetic.sqlite3"
         with MediaHouseStore(database) as store:
             record = seed_requirements(store, self.directory, ready=True)

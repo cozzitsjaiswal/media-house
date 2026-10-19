@@ -15,12 +15,16 @@ PROSPECT_DELETE_ERROR = "cannot delete prospect with requirements history"
 
 
 class RequirementsRetentionTests(unittest.TestCase):
+    """Tests that prospects and meetings with requirements history cannot be deleted."""
+
     def setUp(self) -> None:
+        """Create a temporary directory for per-test database fixtures."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
 
     def _seed_prospect_and_meeting(self, store: MediaHouseStore) -> tuple[int, int]:
+        """Import a synthetic lead and record a meeting, returning the prospect and meeting IDs."""
         store.import_csv(write_csv(self.directory, [lead_row()]), researcher="researcher")
         prospect_id = int(store.list_prospects()[0]["id"])
         meeting = store.record_meeting(
@@ -34,6 +38,7 @@ class RequirementsRetentionTests(unittest.TestCase):
         return prospect_id, int(meeting["id"])
 
     def _seed_history(self, store: MediaHouseStore) -> tuple[int, int, list[dict[str, object]]]:
+        """Seed a prospect with a draft, approved, and superseding-approved requirements document history."""
         prospect_id, meeting_id = self._seed_prospect_and_meeting(store)
 
         draft = store.capture_requirements(
@@ -65,6 +70,7 @@ class RequirementsRetentionTests(unittest.TestCase):
 
     @staticmethod
     def _counts(store: MediaHouseStore) -> dict[str, int]:
+        """Return row counts for each core table, keyed by table name."""
         tables = ("companies", "prospects", "source_evidence", "meetings", "requirements_documents", "audit_events")
         return {
             table: int(store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
@@ -73,6 +79,7 @@ class RequirementsRetentionTests(unittest.TestCase):
 
     @staticmethod
     def _requirements_foreign_key_action(store: MediaHouseStore, source_column: str) -> str:
+        """Return the ON DELETE action configured for the given foreign key column on requirements_documents."""
         rows = store.connection.execute("PRAGMA foreign_key_list(requirements_documents)").fetchall()
         for row in rows:
             if row[3] == source_column:
@@ -80,6 +87,7 @@ class RequirementsRetentionTests(unittest.TestCase):
         raise AssertionError(f"requirements_documents has no foreign key for {source_column}")
 
     def test_new_database_blocks_prospect_delete_and_retains_all_history(self) -> None:
+        """Verify a newly created database blocks deleting a prospect with requirements history and retains it."""
         database = self.directory / "new.sqlite3"
         with MediaHouseStore(database) as store:
             prospect_id, _meeting_id, before_records = self._seed_history(store)
@@ -99,6 +107,7 @@ class RequirementsRetentionTests(unittest.TestCase):
             self.assertEqual(before_records[2], store.get_requirements_document(before_records[2]["id"]))
 
     def test_prospect_without_requirements_history_remains_deletable(self) -> None:
+        """Verify a prospect with no requirements history can still be deleted along with its meeting."""
         database = self.directory / "without-requirements.sqlite3"
         with MediaHouseStore(database) as store:
             prospect_id, meeting_id = self._seed_prospect_and_meeting(store)
@@ -113,6 +122,7 @@ class RequirementsRetentionTests(unittest.TestCase):
             self.assertEqual(1, store.connection.execute("PRAGMA foreign_keys").fetchone()[0])
 
     def test_existing_legacy_cascade_table_gets_guard_after_reopen(self) -> None:
+        """Verify reopening a database with a legacy CASCADE foreign key still blocks deletes with history."""
         database = self.directory / "legacy.sqlite3"
         with MediaHouseStore(database) as store:
             prospect_id, _meeting_id, before_records = self._seed_history(store)
@@ -146,6 +156,7 @@ class RequirementsRetentionTests(unittest.TestCase):
             self.assertEqual(1, store.connection.execute("PRAGMA foreign_keys").fetchone()[0])
 
     def test_direct_meeting_delete_with_requirements_remains_restricted(self) -> None:
+        """Verify deleting a meeting that has requirements history is restricted and retains all data."""
         database = self.directory / "meeting-restrict.sqlite3"
         with MediaHouseStore(database) as store:
             _prospect_id, meeting_id, before_records = self._seed_history(store)
@@ -160,6 +171,7 @@ class RequirementsRetentionTests(unittest.TestCase):
             self.assertEqual(1, store.connection.execute("PRAGMA foreign_keys").fetchone()[0])
 
     def _rewrite_requirements_table_to_legacy_cascade(self, database: Path) -> None:
+        """Rewrite requirements_documents to use a legacy ON DELETE CASCADE foreign key, simulating an old schema."""
         with sqlite3.connect(database) as connection:
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute("DROP TRIGGER IF EXISTS prevent_prospect_delete_with_requirements_history")

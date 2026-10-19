@@ -23,10 +23,14 @@ MAX_REQUIREMENTS_INPUT_BYTES = 2 * 1024 * 1024
 
 
 def _reject_json_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN or Infinity."""
+
     raise ValueError(f"non-standard JSON constant {value!r}")
 
 
 def _load_requirements_document(path: Path) -> dict[str, object]:
+    """Read and size-check a requirements JSON file, returning its object body."""
+
     try:
         with path.open("rb") as handle:
             payload = handle.read(MAX_REQUIREMENTS_INPUT_BYTES + 1)
@@ -41,6 +45,8 @@ def _load_requirements_document(path: Path) -> dict[str, object]:
 
 
 def _parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser with all subcommands."""
+
     parser = argparse.ArgumentParser(
         prog="python -m media_house.cli",
         description="Local Media House prospect store; discovery network access is opt-in. No outbound sending.",
@@ -225,6 +231,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _discovery_command(arguments: argparse.Namespace) -> None:
+    """Handle the discover plan/run/import subcommands."""
+
     if arguments.discovery_command == "import":
         result = import_discovery(
             load_result(arguments.json_path), arguments.db,
@@ -274,6 +282,8 @@ def _discovery_command(arguments: argparse.Namespace) -> None:
 
 
 def _finder_command(arguments: argparse.Namespace) -> int:
+    """Handle the finder classify/import subcommands."""
+
     if arguments.finder_command == "classify":
         report = classify_saved_input(arguments.json_path, arguments.synthetic_db)
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
@@ -296,6 +306,8 @@ def _finder_command(arguments: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse arguments, dispatch to the requested subcommand, and return an exit code."""
+
     parser = _parser()
     arguments = parser.parse_args(argv)
     try:

@@ -39,6 +39,8 @@ SOURCE_ID_PATTERN = re.compile(r"(node|way|relation)/([1-9][0-9]{0,18})\Z")
 
 @dataclass(frozen=True)
 class DiscoveryRecord:
+    """One unverified business record parsed from an Overpass element."""
+
     source_object_id: str
     source_url: str
     name: str
@@ -54,6 +56,8 @@ class DiscoveryRecord:
     retrieved_at: str
 
     def as_dict(self) -> dict[str, Any]:
+        """Return the record as a plain dict with explicit unverified evidence flags."""
+
         return {
             **asdict(self),
             "matched_filters": list(self.matched_filters),
@@ -72,6 +76,8 @@ class DiscoveryRecord:
 
 @dataclass(frozen=True)
 class DiscoveryResult:
+    """The outcome of one discovery run: parsed records plus skip/cache bookkeeping."""
+
     plan: DiscoveryPlan
     retrieved_at: str
     records: tuple[DiscoveryRecord, ...]
@@ -81,6 +87,8 @@ class DiscoveryResult:
 
     @property
     def counts(self) -> dict[str, int]:
+        """Return source-returned, discovered, invalid, and skipped element counts."""
+
         return {
             "source_returned": self.returned_elements,
             "discovered": len(self.records),
@@ -90,9 +98,13 @@ class DiscoveryResult:
 
     @property
     def cacheable(self) -> bool:
+        """Whether this result is free of malformed-element/missing-location skips."""
+
         return not any(self.skipped_reasons.get(reason) for reason in ("malformed_element", "missing_location"))
 
     def as_dict(self) -> dict[str, Any]:
+        """Return the full discovery result as a plain, saveable dict."""
+
         return {
             "format": "media-house-discovery",
             "schema_version": 1,
@@ -106,6 +118,8 @@ class DiscoveryResult:
 
 
 def _valid_tags(tags: object) -> bool:
+    """Whether a tags value is a bounded dict of valid Unicode string key/value pairs."""
+
     if not isinstance(tags, dict) or len(tags) > 256:
         return False
     for key, value in tags.items():
@@ -120,6 +134,8 @@ def _valid_tags(tags: object) -> bool:
 
 
 def _coordinates(location: object) -> tuple[float, float] | None:
+    """Extract and validate a (latitude, longitude) pair from a location object."""
+
     if not isinstance(location, dict):
         return None
     latitude, longitude = location.get("lat"), location.get("lon")
@@ -134,6 +150,8 @@ def _coordinates(location: object) -> tuple[float, float] | None:
 def _parse_element(
     element: object, plan: DiscoveryPlan, retrieved_at: str,
 ) -> tuple[DiscoveryRecord | None, str | None]:
+    """Parse and validate one Overpass element into a record, or a skip reason."""
+
     if not isinstance(element, dict):
         return None, "malformed_element"
     kind, object_id = element.get("type"), element.get("id")
@@ -219,6 +237,8 @@ def parse_overpass(payload: object, plan: DiscoveryPlan, *, retrieved_at: str) -
 
 
 def _same_json(left: object, right: object) -> bool:
+    """Whether two values serialize to identical canonical JSON."""
+
     # Unlike Python equality, this distinguishes booleans from integer flags.
     return json.dumps(left, sort_keys=True, ensure_ascii=False) == json.dumps(right, sort_keys=True, ensure_ascii=False)
 
@@ -297,24 +317,36 @@ def result_from_dict(value: object) -> DiscoveryResult:
 
 
 def load_result(path: Path) -> DiscoveryResult:
+    """Read and validate a saved discovery result JSON file."""
+
     return result_from_dict(read_json(path))
 
 
 def save_result(path: Path, result: DiscoveryResult) -> None:
+    """Write a discovery result to disk as JSON atomically."""
+
     atomic_write_json(path, result.as_dict())
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A urllib redirect handler that refuses to follow any redirect."""
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Refuse the redirect so callers can review it instead of following it."""
+
         return None
 
 
 def _open_request(request: urllib.request.Request, *, timeout: int):
+    """Open an HTTP(S) request with redirects disabled."""
+
     # A redirect is reported for operator review instead of silently issuing a second request.
     return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
 def _http_error(status: int, retry_after: str | None) -> DiscoveryError:
+    """Build a DiscoveryError with operator guidance for an HTTP failure status."""
+
     retry_after = canonical_text(retry_after)[:200] or None
     if status == 429:
         guidance = "Rate limited; wait before another operator-triggered request"

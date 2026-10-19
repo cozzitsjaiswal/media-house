@@ -1,3 +1,5 @@
+"""Tests for size-bounded, binary-safe reading of requirements JSON input files."""
+
 from __future__ import annotations
 
 import io
@@ -22,13 +24,17 @@ SIZE_ERROR = (
 
 
 class RequirementsInputTests(unittest.TestCase):
+    """Tests for loading and size-bounding the requirements JSON input file."""
+
     def setUp(self) -> None:
+        """Create a temporary directory and the path for the requirements input file."""
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
         self.input_path = self.directory / "requirements.json"
 
     def test_read_is_binary_bounded_and_context_managed(self) -> None:
+        """Verify the loader opens the file in binary mode, reads a bounded amount, and closes the stream."""
         stream = io.BytesIO(b'{"synthetic": true}')
         with (
             patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded reads are forbidden")),
@@ -41,6 +47,7 @@ class RequirementsInputTests(unittest.TestCase):
         self.assertTrue(stream.closed)
 
     def test_valid_json_below_and_exactly_at_limit_is_accepted(self) -> None:
+        """Verify valid JSON input below and exactly at the size limit is accepted."""
         payload = b'{"synthetic": true}'
         for size in (len(payload), MAX_REQUIREMENTS_INPUT_BYTES - 1, MAX_REQUIREMENTS_INPUT_BYTES):
             with self.subTest(size=size):
@@ -48,6 +55,7 @@ class RequirementsInputTests(unittest.TestCase):
                 self.assertEqual({"synthetic": True}, _load_requirements_document(self.input_path))
 
     def test_limit_plus_one_and_larger_are_rejected_before_json_parsing(self) -> None:
+        """Verify input one byte over the limit or larger is rejected before JSON parsing is attempted."""
         for size in (MAX_REQUIREMENTS_INPUT_BYTES + 1, MAX_REQUIREMENTS_INPUT_BYTES * 2):
             with self.subTest(size=size):
                 self.input_path.write_bytes(b"x" * size)
@@ -58,6 +66,7 @@ class RequirementsInputTests(unittest.TestCase):
                 self.assertEqual(SIZE_ERROR, str(raised.exception))
 
     def test_utf8_json_below_and_exactly_at_byte_limit_is_accepted(self) -> None:
+        """Verify multi-byte UTF-8 JSON input just below and exactly at the byte limit is accepted."""
         prefix, suffix = b'{"text":"', b'"}'
         character = "€"
         for size in (MAX_REQUIREMENTS_INPUT_BYTES - 1, MAX_REQUIREMENTS_INPUT_BYTES):
@@ -69,6 +78,7 @@ class RequirementsInputTests(unittest.TestCase):
                 self.assertEqual({"text": text}, _load_requirements_document(self.input_path))
 
     def test_oversize_utf8_split_at_read_bound_reports_size_before_decoding(self) -> None:
+        """Verify a multi-byte UTF-8 character split across the read boundary still reports a size error, not a decode error."""
         prefix = b'{"text":"'
         payload = prefix + b"x" * (MAX_REQUIREMENTS_INPUT_BYTES - len(prefix)) + "€".encode("utf-8") + b'"}'
         self.input_path.write_bytes(payload)
@@ -79,6 +89,7 @@ class RequirementsInputTests(unittest.TestCase):
         self.assertEqual(SIZE_ERROR, str(raised.exception))
 
     def test_invalid_json_utf8_constants_and_non_objects_remain_validation_errors(self) -> None:
+        """Verify malformed JSON, invalid UTF-8, non-finite constants, and non-object payloads all raise ValidationError."""
         for payload in (b"{", b'{"text":"\xff"}', b'{"value":NaN}', b'{"value":Infinity}', b"[]"):
             with self.subTest(payload=payload):
                 self.input_path.write_bytes(payload)
@@ -86,6 +97,7 @@ class RequirementsInputTests(unittest.TestCase):
                     _load_requirements_document(self.input_path)
 
     def test_cli_oversize_is_clean_and_does_not_mutate_requirements_or_audit(self) -> None:
+        """Verify an oversize input file fails the CLI cleanly without mutating requirements or audit data."""
         database = self.directory / "synthetic.sqlite3"
         with MediaHouseStore(database) as store:
             store.import_csv(write_csv(self.directory, [lead_row()]), researcher="human-researcher")

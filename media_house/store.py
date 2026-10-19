@@ -344,6 +344,8 @@ class ImportSummary:
     source_evidence_added: int
 
     def as_dict(self) -> dict[str, int]:
+        """Return the import counts as a plain dict."""
+
         return {
             "rows_read": self.rows_read,
             "companies_created": self.companies_created,
@@ -355,10 +357,14 @@ class ImportSummary:
 
 
 def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
+    """Convert a ``sqlite3.Row`` to a plain dict keyed by column name."""
+
     return {key: row[key] for key in row.keys()}
 
 
 def _parse_opt_out(value: str | None, *, row_number: int) -> int | None:
+    """Parse a CSV opt_out cell into ``1``, ``0``, or ``None`` for unknown."""
+
     text = normalize_token(value)
     if not text:
         raise ValidationError(f"row {row_number}: opt_out must be explicit true, false, or unknown")
@@ -372,6 +378,8 @@ def _parse_opt_out(value: str | None, *, row_number: int) -> int | None:
 
 
 def _parse_permission(value: str | None, *, row_number: int) -> str:
+    """Parse and alias a CSV channel_permission_status cell to a canonical value."""
+
     text = normalize_token(value)
     if not text:
         raise ValidationError(
@@ -395,6 +403,8 @@ def _parse_permission(value: str | None, *, row_number: int) -> str:
 
 
 def _parse_contact_value(value: str | None, *, field_name: str, row_number: int) -> str:
+    """Require an explicit contact field value, normalizing unknown markers."""
+
     text = canonical_text(value)
     if not text:
         raise ValidationError(f"row {row_number}: {field_name} must be explicit (use unknown)")
@@ -426,6 +436,8 @@ DEFAULT_SERVICE_PACKAGES = (
 
 
 def _parse_active(value: bool | str | int) -> int:
+    """Coerce a bool/str/int active flag to ``1`` or ``0``."""
+
     if isinstance(value, bool):
         return int(value)
     text = normalize_token(str(value))
@@ -437,6 +449,8 @@ def _parse_active(value: bool | str | int) -> int:
 
 
 def _validate_money_amount(value: int | str, *, field_name: str = "price_amount") -> int:
+    """Validate and return a positive integer money amount."""
+
     try:
         amount = int(value)
     except (TypeError, ValueError) as exc:
@@ -447,6 +461,8 @@ def _validate_money_amount(value: int | str, *, field_name: str = "price_amount"
 
 
 def _validate_currency(value: str | None) -> str:
+    """Validate and return an uppercase three-letter ISO currency code."""
+
     currency = normalize_token(value or "INR").upper()
     if not re.fullmatch(r"[A-Z]{3}", currency):
         raise ValidationError("currency must be a three-letter ISO currency code")
@@ -454,6 +470,8 @@ def _validate_currency(value: str | None) -> str:
 
 
 def _validate_human_actor(value: str | None, *, field_name: str) -> str:
+    """Require a non-empty, non-machine actor name for an attributed action."""
+
     actor = canonical_text(value)
     if not actor or normalize_token(actor) in _MACHINE_ACTOR_VALUES:
         raise ValidationError(f"{field_name} must be a non-empty human actor")
@@ -461,7 +479,11 @@ def _validate_human_actor(value: str | None, *, field_name: str) -> str:
 
 
 def _parse_row(row: Mapping[str, str | None], *, row_number: int) -> ParsedLead:
+    """Validate and normalize one CSV row into a ``ParsedLead``."""
+
     def required(name: str) -> str:
+        """Return the canonical text of a required column, or raise if blank."""
+
         value = canonical_text(row.get(name))
         if not value:
             raise ValidationError(f"row {row_number}: {name} is required")
@@ -548,6 +570,8 @@ class MediaHouseStore:
     """Small local SQLite store for the first safe revenue-engine milestone."""
 
     def __init__(self, database: str | os.PathLike[str] = "media_house.sqlite3") -> None:
+        """Open (creating if needed) the SQLite database and apply the schema."""
+
         self.database = str(database)
         if self.database not in {":memory:", ""}:
             Path(self.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
@@ -559,16 +583,24 @@ class MediaHouseStore:
         self.connection.commit()
 
     def close(self) -> None:
+        """Close the underlying SQLite connection."""
+
         self.connection.close()
 
     def __enter__(self) -> "MediaHouseStore":
+        """Return self for use as a context manager."""
+
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        """Close the connection when exiting the context manager."""
+
         self.close()
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
+        """Run a block inside an immediate transaction, rolling back on error."""
+
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             yield
@@ -578,6 +610,8 @@ class MediaHouseStore:
             raise
 
     def _read_csv(self, path: str | os.PathLike[str], *, researcher: str) -> list[ParsedLead]:
+        """Read, validate, and parse every row of a lead CSV file."""
+
         actor = canonical_text(researcher)
         if not actor:
             raise ValidationError("researcher is required")
@@ -662,6 +696,8 @@ class MediaHouseStore:
         return ImportSummary(rows_read=len(rows), **counts)
 
     def _find_company(self, lead: ParsedLead) -> sqlite3.Row | None:
+        """Locate an existing company matching the lead by domain, OSM source, or name/region."""
+
         domain_match = None
         if lead.normalized_domain:
             domain_match = self.connection.execute(
@@ -702,6 +738,8 @@ class MediaHouseStore:
         ).fetchone()
 
     def _upsert_company(self, lead: ParsedLead) -> tuple[int, bool]:
+        """Insert or update the company for a lead, returning its id and created flag."""
+
         existing = self._find_company(lead)
         now = utc_now()
         if existing is None:
@@ -749,6 +787,8 @@ class MediaHouseStore:
         return int(existing["id"]), False
 
     def _upsert_prospect(self, lead: ParsedLead, company_id: int) -> tuple[int, bool]:
+        """Insert or merge-update the prospect for a company, returning its id and created flag."""
+
         existing_cursor = self.connection.execute(
             "SELECT * FROM prospects WHERE company_id = ?", (company_id,)
         )
@@ -870,6 +910,8 @@ class MediaHouseStore:
 
     @staticmethod
     def _merge_unknown_text(existing: str | None, incoming: str | None) -> str:
+        """Keep a known existing value when the incoming value is unknown."""
+
         old = canonical_text(existing) or "unknown"
         new = canonical_text(incoming) or "unknown"
         if is_unknown(new) and not is_unknown(old):
@@ -878,6 +920,8 @@ class MediaHouseStore:
 
     @staticmethod
     def _merge_contact_channel(existing: str | None, incoming: str | None) -> str:
+        """Return the incoming contact channel, normalized to 'unknown' when unset."""
+
         new = canonical_text(incoming) or "unknown"
         return "unknown" if is_unknown(new) else new
 
@@ -893,6 +937,8 @@ class MediaHouseStore:
 
     @staticmethod
     def _merge_permission(existing: str | None, incoming: str) -> str:
+        """Merge a channel permission status, never weakening a block/withdrawal with unknown."""
+
         old = normalize_token(existing)
         new = normalize_token(incoming)
         # An explicit block/withdrawal is never weakened by a later unknown.
@@ -922,6 +968,8 @@ class MediaHouseStore:
 
     @staticmethod
     def _merge_lead_status(existing: str, incoming: str | None) -> str:
+        """Merge lead status, keeping progress rather than resetting to 'new'."""
+
         if not incoming:
             return existing
         if incoming == "new" and existing not in {"new", "unknown"}:
@@ -930,6 +978,8 @@ class MediaHouseStore:
 
     @staticmethod
     def _merge_notes(existing: str | None, incoming: str) -> str:
+        """Append new notes to existing notes, avoiding duplicate or empty entries."""
+
         old = canonical_text(existing)
         new = canonical_text(incoming)
         if not new or new == old:
@@ -937,6 +987,8 @@ class MediaHouseStore:
         return f"{old}\n{new}" if old else new
 
     def _refresh_score(self, company_id: int) -> None:
+        """Recalculate and persist the fit score for a company's prospect."""
+
         row = self.connection.execute(
             """
             SELECT c.region, c.industry, c.website, p.*,
@@ -964,6 +1016,8 @@ class MediaHouseStore:
         )
 
     def get_prospect(self, prospect_id: int) -> dict[str, Any]:
+        """Return a prospect with its company fields, score reasons, and evidence count."""
+
         row = self.connection.execute(
             """
             SELECT p.*, c.name AS company_name, c.website, c.normalized_domain,
@@ -987,6 +1041,8 @@ class MediaHouseStore:
         return result
 
     def list_prospects(self, *, lead_status: str | None = None) -> list[dict[str, Any]]:
+        """List prospects, optionally filtered by lead status."""
+
         if lead_status:
             rows = self.connection.execute(
                 "SELECT id FROM prospects WHERE lead_status = ? ORDER BY id", (normalize_token(lead_status),)
@@ -996,6 +1052,8 @@ class MediaHouseStore:
         return [self.get_prospect(int(row["id"])) for row in rows]
 
     def list_source_evidence(self, prospect_id: int) -> list[dict[str, Any]]:
+        """List source evidence records for a prospect, ordered by observation time."""
+
         # This lookup also checks that the prospect exists and keeps the public
         # method's failure mode consistent with get_prospect.
         self.get_prospect(prospect_id)
@@ -1104,12 +1162,16 @@ class MediaHouseStore:
 
     @staticmethod
     def _lead_status_after_meeting(current_status: str | None) -> str:
+        """Advance an early lead status to discovery_complete; leave later statuses alone."""
+
         normalized = normalize_token(current_status)
         if normalized in _MEETING_ADVANCEABLE_LEAD_STATUSES:
             return "discovery_complete"
         return normalized or "discovery_complete"
 
     def get_meeting(self, meeting_id: int) -> dict[str, Any]:
+        """Return a meeting record joined with its prospect's status and company name."""
+
         row = self.connection.execute(
             """
             SELECT m.*, p.lead_status, c.name AS company_name
@@ -1125,6 +1187,8 @@ class MediaHouseStore:
         return _row_dict(row)
 
     def list_meetings(self, *, prospect_id: int | None = None) -> list[dict[str, Any]]:
+        """List meetings, optionally filtered to one prospect."""
+
         if prospect_id is not None:
             self.get_prospect(prospect_id)
             rows = self.connection.execute(
@@ -1263,6 +1327,8 @@ class MediaHouseStore:
         return self.get_requirements_document(document_id)
 
     def get_requirements_document(self, document_id: int) -> dict[str, Any]:
+        """Return a requirements document record, validated for stored integrity."""
+
         row = self.connection.execute(
             """
             SELECT r.*, m.meeting_at, c.name AS company_name
@@ -1329,6 +1395,8 @@ class MediaHouseStore:
         prospect_id: int | None = None,
         meeting_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        """List requirements documents, optionally filtered by prospect and/or meeting."""
+
         if prospect_id is not None:
             self.get_prospect(prospect_id)
         if meeting_id is not None:
@@ -1573,6 +1641,8 @@ class MediaHouseStore:
         return self.get_requirements_document(document_id)
 
     def _seed_default_service_packages(self) -> None:
+        """Insert the default service packages the first time the table is empty."""
+
         count = self.connection.execute("SELECT COUNT(*) AS count FROM service_packages").fetchone()["count"]
         if count:
             return
@@ -1606,6 +1676,8 @@ class MediaHouseStore:
         object_id: int | None,
         metadata: Mapping[str, Any],
     ) -> None:
+        """Insert an audit event row; callers commit as part of their own transaction."""
+
         self.connection.execute(
             """
             INSERT INTO audit_events
@@ -1626,6 +1698,8 @@ class MediaHouseStore:
         delivery_notes: str = "",
         actor: str,
     ) -> dict[str, Any]:
+        """Create a new active/inactive service package and record an audit event."""
+
         package_name = canonical_text(name)
         if not package_name:
             raise ValidationError("package name is required")
@@ -1680,6 +1754,8 @@ class MediaHouseStore:
         active: bool | str | int | None = None,
         delivery_notes: str | None = None,
     ) -> dict[str, Any]:
+        """Update selected fields of an existing service package and record an audit event."""
+
         human_actor = _validate_human_actor(actor, field_name="actor")
         current = self.get_service_package(package_id)
         values = {
@@ -1727,6 +1803,8 @@ class MediaHouseStore:
         return self.get_service_package(package_id)
 
     def get_service_package(self, package_id: int) -> dict[str, Any]:
+        """Return a service package by id."""
+
         row = self.connection.execute("SELECT * FROM service_packages WHERE id = ?", (package_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"service package {package_id} was not found")
@@ -1735,6 +1813,8 @@ class MediaHouseStore:
         return result
 
     def list_service_packages(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        """List service packages, optionally including inactive ones."""
+
         if include_inactive:
             rows = self.connection.execute("SELECT id FROM service_packages ORDER BY id").fetchall()
         else:
@@ -1749,6 +1829,8 @@ class MediaHouseStore:
         requested_by: str,
         notes: str = "",
     ) -> dict[str, Any]:
+        """Create an order request for a prospect against an active service package."""
+
         actor = _validate_human_actor(requested_by, field_name="requested_by")
         self.get_prospect(prospect_id)
         package = self.get_service_package(package_id)
@@ -1793,6 +1875,8 @@ class MediaHouseStore:
         return self.get_order_request(order_id)
 
     def get_order_request(self, order_id: int) -> dict[str, Any]:
+        """Return an order request joined with its prospect's company name."""
+
         row = self.connection.execute(
             """
             SELECT o.*, c.name AS company_name
@@ -1808,6 +1892,8 @@ class MediaHouseStore:
         return _row_dict(row)
 
     def list_order_requests(self, *, prospect_id: int | None = None) -> list[dict[str, Any]]:
+        """List order requests, optionally filtered to one prospect."""
+
         if prospect_id is not None:
             self.get_prospect(prospect_id)
             rows = self.connection.execute(
@@ -1826,6 +1912,8 @@ class MediaHouseStore:
         payment_link: str | None = None,
         upi_uri: str | None = None,
     ) -> dict[str, Any]:
+        """Create a pending payment request for a requested (unpaid) order."""
+
         actor = _validate_human_actor(created_by, field_name="created_by")
         order = self.get_order_request(order_id)
         if order["status"] != "REQUESTED":
@@ -1866,6 +1954,8 @@ class MediaHouseStore:
         return self.get_payment_request(payment_request_id)
 
     def get_payment_request(self, payment_request_id: int) -> dict[str, Any]:
+        """Return a payment request by id; ``payment_verified`` is always False here."""
+
         row = self.connection.execute(
             "SELECT * FROM payment_requests WHERE id = ?", (payment_request_id,)
         ).fetchone()
@@ -1877,6 +1967,8 @@ class MediaHouseStore:
         return result
 
     def list_payment_requests(self, *, order_id: int | None = None) -> list[dict[str, Any]]:
+        """List payment requests, optionally filtered to one order."""
+
         if order_id is not None:
             self.get_order_request(order_id)
             rows = self.connection.execute(
@@ -1920,6 +2012,8 @@ class MediaHouseStore:
         return self.get_draft(int(cursor.lastrowid))
 
     def get_draft(self, draft_id: int) -> dict[str, Any]:
+        """Return an outreach draft joined with its prospect's status and company name."""
+
         row = self.connection.execute(
             """
             SELECT d.*, p.lead_status, p.opt_out, p.channel_permission_status,
@@ -1939,6 +2033,8 @@ class MediaHouseStore:
         return result
 
     def list_drafts(self) -> list[dict[str, Any]]:
+        """List all outreach drafts."""
+
         rows = self.connection.execute("SELECT id FROM outreach_drafts ORDER BY id").fetchall()
         return [self.get_draft(int(row["id"])) for row in rows]
 
@@ -2010,6 +2106,8 @@ class MediaHouseStore:
 
     @staticmethod
     def _approval_problems(row: Mapping[str, Any]) -> list[str]:
+        """Return human-readable reasons a draft cannot be approved, if any."""
+
         problems: list[str] = []
         opt_out = row["opt_out"]
         if opt_out == 1:
@@ -2042,6 +2140,8 @@ class MediaHouseStore:
         return problems
 
     def list_audit_events(self, *, action: str | None = None) -> list[dict[str, Any]]:
+        """List audit events, optionally filtered by action name."""
+
         if action:
             rows = self.connection.execute(
                 "SELECT * FROM audit_events WHERE action = ? ORDER BY id", (action,)

@@ -52,6 +52,8 @@ class StorageFailure(Exception):
         state: str = "pre_install_failed",
         artifacts: tuple[str, ...] = (),
     ) -> None:
+        """Record the failure message plus its installation/cleanup/durability state."""
+
         super().__init__(message)
         self.code = code
         self.installed = installed
@@ -96,6 +98,8 @@ def _attach_failure_report(report: dict[str, Any], failure: StorageFailure) -> N
 
 
 class _OpenHow(ctypes.Structure):
+    """ctypes mirror of the Linux kernel's ``struct open_how`` for ``openat2``."""
+
     _fields_ = [("flags", ctypes.c_uint64), ("mode", ctypes.c_uint64), ("resolve", ctypes.c_uint64)]
 
 
@@ -103,6 +107,8 @@ class _LinuxSyscalls:
     """Narrow syscall boundaries; tests inject here, never with sleeps."""
 
     def __init__(self) -> None:
+        """Verify the Linux ABI and resolve the libc/syscall primitives needed below."""
+
         machine = platform.machine()
         if (
             sys.platform != "linux"
@@ -127,6 +133,8 @@ class _LinuxSyscalls:
         self._openat2_number = _SYSCALL_OPENAT2[machine]
 
     def open_root(self) -> int:
+        """Open a descriptor pinned to the filesystem root ``/``."""
+
         # Fixed '/' bootstraps a dirfd. BENEATH cannot be used with an absolute
         # path; every subsequent anchor/parent/target open uses openat2.
         return self.openat2(
@@ -137,6 +145,8 @@ class _LinuxSyscalls:
         )
 
     def openat2(self, dirfd: int, name: str, flags: int, *, mode: int = 0, resolve: int) -> int:
+        """Invoke the raw ``openat2`` syscall with the given resolve constraints."""
+
         how = _OpenHow(flags, mode, resolve)
         result = self._syscall(
             ctypes.c_long(self._openat2_number), ctypes.c_int(dirfd), ctypes.c_char_p(os.fsencode(name)),
@@ -148,32 +158,46 @@ class _LinuxSyscalls:
         return int(result)
 
     def link_empty(self, source_fd: int, parent_fd: int, basename: str) -> None:
+        """Give an anonymous (O_TMPFILE) descriptor its first name via linkat(AT_EMPTY_PATH)."""
+
         if self._linkat(source_fd, b"", parent_fd, os.fsencode(basename), _AT_EMPTY_PATH) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error), basename)
 
     @staticmethod
     def close(fd: int) -> None:
+        """Close a file descriptor."""
+
         os.close(fd)
 
     @staticmethod
     def fsync(fd: int) -> None:
+        """Flush a file descriptor's data and metadata to storage."""
+
         os.fsync(fd)
 
     @staticmethod
     def fstat(fd: int) -> os.stat_result:
+        """Return the stat result for an open file descriptor."""
+
         return os.fstat(fd)
 
     @staticmethod
     def read(fd: int, size: int, offset: int) -> bytes:
+        """Read a chunk of bytes from a descriptor at the given offset."""
+
         return os.pread(fd, size, offset)
 
     @staticmethod
     def write(fd: int, payload: bytes) -> int:
+        """Write bytes to a descriptor, returning the number of bytes written."""
+
         return os.write(fd, payload)
 
     @staticmethod
     def unlink(parent_fd: int, basename: str) -> None:
+        """Unlink a directory entry by name relative to a parent descriptor."""
+
         os.unlink(basename, dir_fd=parent_fd)
 
 
@@ -197,6 +221,8 @@ def _failure(
     state: str | None = None,
     artifacts: tuple[str, ...] = (),
 ) -> StorageFailure:
+    """Build a StorageFailure, inferring a default state from the installed flag."""
+
     if state is None:
         state = "installed_failure" if installed else "pre_install_failed"
     return StorageFailure(
@@ -220,6 +246,8 @@ def _exception_failure(
     state: str | None = None,
     artifacts: tuple[str, ...] = (),
 ) -> StorageFailure:
+    """Build a StorageFailure from a caught exception's message or class name."""
+
     return _failure(
         str(exc) or exc.__class__.__name__,
         code=code,
@@ -232,12 +260,16 @@ def _exception_failure(
 
 
 def _sqlite_image_available() -> bool:
+    """Whether the running Python's SQLite build supports serialize/deserialize."""
+
     return callable(getattr(sqlite3.Connection, "serialize", None)) and callable(
         getattr(sqlite3.Connection, "deserialize", None)
     )
 
 
 def _path_text(value: str | os.PathLike[str]) -> str:
+    """Validate and return a path-like value as a nonempty, NUL-free text path."""
+
     try:
         raw = os.fspath(value)
     except TypeError as exc:
@@ -248,6 +280,8 @@ def _path_text(value: str | os.PathLike[str]) -> str:
 
 
 def _reject_uri_and_traversal(raw: str) -> None:
+    """Reject a path spelled as a URI or containing ``..`` traversal components."""
+
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", raw):
         raise _failure("database must be a filesystem path, not a URI", code="invalid_database_path")
     if any(part == ".." for part in raw.split("/")):
@@ -255,6 +289,8 @@ def _reject_uri_and_traversal(raw: str) -> None:
 
 
 def _absolute_path(raw: str) -> Path:
+    """Expand and resolve a path to an absolute spelling without following symlinks."""
+
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
@@ -265,12 +301,16 @@ def _absolute_path(raw: str) -> Path:
 
 
 def _parts(path: Path) -> tuple[str, ...]:
+    """Return an absolute path's components, requiring a Linux root anchor."""
+
     if path.anchor != "/":
         raise _failure("database path must be absolute on Linux", code="invalid_database_path")
     return tuple(part for part in path.parts[1:] if part not in {"", "."})
 
 
 def _is_descendant(path: Path, ancestor: Path) -> bool:
+    """Whether a path lies beneath a given ancestor directory."""
+
     try:
         path.relative_to(ancestor)
         return True
@@ -279,6 +319,8 @@ def _is_descendant(path: Path, ancestor: Path) -> bool:
 
 
 def _validated_paths(database: str | os.PathLike[str], workspace_root: Path) -> tuple[Path, Path, Path, tuple[str, ...], tuple[str, ...]]:
+    """Validate that the database path is a safe location under the temp directory."""
+
     raw = _path_text(database)
     _reject_uri_and_traversal(raw)
     path = _absolute_path(raw)
@@ -302,6 +344,8 @@ def _validated_paths(database: str | os.PathLike[str], workspace_root: Path) -> 
 
 
 def _identity_matches(left: os.stat_result, right: os.stat_result) -> bool:
+    """Whether two stat results refer to the same device and inode."""
+
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
@@ -318,6 +362,8 @@ def _target_identity_matches(left: os.stat_result, right: os.stat_result) -> boo
 
 
 def _regular_single_link(stat_result: os.stat_result, *, zero_ok: bool = False) -> bool:
+    """Whether a stat result is a single-link regular file, optionally allowing zero size."""
+
     return (
         stat.S_ISREG(stat_result.st_mode)
         and stat_result.st_nlink == 1
@@ -326,6 +372,8 @@ def _regular_single_link(stat_result: os.stat_result, *, zero_ok: bool = False) 
 
 
 def _same_image_stat(left: os.stat_result, right: os.stat_result) -> bool:
+    """Whether two stat results describe the same unchanged file image."""
+
     return (
         _identity_matches(left, right)
         and left.st_mode == right.st_mode
@@ -337,6 +385,8 @@ def _same_image_stat(left: os.stat_result, right: os.stat_result) -> bool:
 
 
 def _close_fd(boundary: _LinuxSyscalls, fd: int | None, *, label: str, installed: bool, durability: bool) -> StorageFailure | None:
+    """Close one descriptor, converting a close failure into a StorageFailure."""
+
     if fd is None:
         return None
     try:
@@ -361,6 +411,8 @@ def _close_many(
     installed: bool = False,
     durability: bool = False,
 ) -> StorageFailure | None:
+    """Close multiple descriptors, merging any close failures into one."""
+
     failure: StorageFailure | None = None
     for label, fd in descriptors:
         current = _close_fd(boundary, fd, label=label, installed=installed, durability=durability)
@@ -381,6 +433,8 @@ def _walk_from_root(
     close_root_on_error: bool = True,
     final_flags: int | None = None,
 ) -> tuple[int, list[tuple[str, int]]]:
+    """Walk a sequence of path components from a root descriptor using openat2."""
+
     current = root_fd
     opened: list[tuple[str, int]] = [("root", root_fd)]
     try:
@@ -426,6 +480,8 @@ def _close_intermediate(
     *,
     keep_fd: int,
 ) -> StorageFailure | None:
+    """Close every opened descriptor except the one to keep."""
+
     return _close_many(
         boundary,
         [(label, fd) for label, fd in opened if fd != keep_fd],
@@ -440,6 +496,8 @@ def _entry_metadata(
     installed: bool = False,
     durability: bool = False,
 ) -> os.stat_result:
+    """Stat a directory entry by name via a short-lived O_PATH descriptor."""
+
     entry_fd: int | None = None
     primary: BaseException | None = None
     result: os.stat_result | None = None
@@ -485,32 +543,48 @@ def _entry_metadata(
 
 
 class _MemoryTarget:
+    """A no-op storage target for ``:memory:`` databases, which own no image."""
+
     memory = True
     exists = False
     installed = False
     state = "memory"
 
     def __enter__(self) -> "_MemoryTarget":
+        """Return self for use as a context manager."""
+
         return self
 
     def __exit__(self, exc_type: Any, exc_value: BaseException | None, traceback: Any) -> bool:
+        """Close the target on exit; never suppresses exceptions."""
+
         self.close()
         return False
 
     def read_image(self) -> bytes | None:
+        """Return ``None``; a memory target has no persisted image."""
+
         return None
 
     def verify_entry(self) -> None:
+        """No-op; a memory target has nothing to verify."""
+
         return None
 
     def install_image(self, image: bytes) -> None:
+        """Reject installation; memory targets are owned by the SQLite caller."""
+
         raise _failure("memory targets are owned by the SQLite caller", code="memory_target")
 
     def close(self) -> None:
+        """No-op; a memory target holds no resources to release."""
+
         return None
 
 
 class _FileTarget:
+    """A descriptor-pinned, capability-checked file-backed Finder storage target."""
+
     memory = False
 
     def __init__(
@@ -527,6 +601,8 @@ class _FileTarget:
         target_stat: os.stat_result | None,
         temp_parts: tuple[str, ...],
     ) -> None:
+        """Store the pinned descriptors and stat snapshots needed to verify the target later."""
+
         self._boundary = boundary
         self._database = database
         self._parent = parent
@@ -549,9 +625,13 @@ class _FileTarget:
         self.state = "ready_existing" if self.exists else "ready_new"
 
     def __enter__(self) -> "_FileTarget":
+        """Return self for use as a context manager."""
+
         return self
 
     def __exit__(self, exc_type: Any, exc_value: BaseException | None, traceback: Any) -> bool:
+        """Close the target on exit, merging any cleanup failure into the active exception."""
+
         try:
             self.close()
         except StorageFailure as cleanup:
@@ -568,11 +648,15 @@ class _FileTarget:
         return False
 
     def _require_open(self) -> int:
+        """Return the pinned parent descriptor, raising if the target is closed."""
+
         if self._closed or self._parent_fd is None:
             raise _failure("storage target is closed", code="target_closed", installed=self._installed, state=self.state)
         return self._parent_fd
 
     def _namespace_matches(self) -> bool:
+        """Whether the temp-root and parent directories still match their pinned identity."""
+
         try:
             current_temp = os.lstat(self._temp_root)
             current_parent = os.lstat(self._parent)
@@ -581,6 +665,8 @@ class _FileTarget:
         return _identity_matches(current_temp, self._temp_stat) and _identity_matches(current_parent, self._parent_stat)
 
     def _require_namespace(self, *, installed: bool = False, durability: bool = False) -> None:
+        """Raise if the temporary-directory namespace has changed since pinning."""
+
         if not self._namespace_matches():
             raise _failure(
                 "temporary-directory namespace changed during storage operation",
@@ -591,6 +677,8 @@ class _FileTarget:
             )
 
     def _metadata_matches_target(self) -> bool:
+        """Whether the current directory entry still matches the pinned target's stat."""
+
         if self._target_fd is None or self._target_stat is None or self._parent_fd is None:
             return False
         try:
@@ -625,6 +713,8 @@ class _FileTarget:
         )
 
     def verify_entry(self) -> None:
+        """Verify the pinned target's directory entry and descriptor are unchanged."""
+
         self._require_open()
         self._require_namespace(installed=self._installed, durability=self._durability_confirmed)
         if self._target_fd is None or self._target_stat is None:
@@ -680,6 +770,8 @@ class _FileTarget:
             raise _failure("database entry is no longer a single-link regular file", code="entry_substituted")
 
     def read_image(self) -> bytes | None:
+        """Read the existing target's image bytes, verifying it is unchanged before and after."""
+
         self.verify_entry()
         if self._target_fd is None or self._target_stat is None:
             return None
@@ -724,6 +816,8 @@ class _FileTarget:
         return b"".join(chunks)
 
     def _close_stage(self) -> StorageFailure | None:
+        """Close the anonymous staging descriptor, if one is open."""
+
         if self._stage_fd is None:
             return None
         fd = self._stage_fd
@@ -737,6 +831,8 @@ class _FileTarget:
         )
 
     def install_image(self, image: bytes) -> None:
+        """Stage an image anonymously, then atomically give it its first name via linkat."""
+
         self._require_open()
         if self._target_fd is not None or self._installed:
             raise _failure("existing Finder databases are read-only and cannot be installed", code="target_exists")
@@ -836,6 +932,8 @@ class _FileTarget:
             raise primary
 
     def close(self) -> None:
+        """Close all retained descriptors, remembering any close failure for reuse."""
+
         if self._closed:
             if self._close_failures is not None:
                 raise self._close_failures
@@ -967,6 +1065,8 @@ def _close_setup_descriptors(
     *,
     keep: int | None = None,
 ) -> StorageFailure | None:
+    """Close deduplicated setup descriptors in reverse order, keeping one if given."""
+
     unique: list[tuple[str, int]] = []
     seen: set[int] = set()
     for label, fd in descriptors:
@@ -978,6 +1078,8 @@ def _close_setup_descriptors(
 
 
 def _optional_lstat(path: Path, *, code: str) -> os.stat_result | None:
+    """Return a path's lstat result, or ``None`` if it does not exist."""
+
     try:
         return os.lstat(path)
     except FileNotFoundError:

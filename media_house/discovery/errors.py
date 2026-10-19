@@ -14,6 +14,8 @@ class DiscoveryError(MediaHouseError):
         status: int | None = None,
         retry_after: str | None = None,
     ) -> None:
+        """Store the message plus machine-readable recovery metadata."""
+
         super().__init__(message)
         self.code = code
         self.status = status
