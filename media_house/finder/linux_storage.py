@@ -91,7 +91,7 @@ def _attach_failure_report(report: dict[str, Any], failure: StorageFailure) -> N
     report["cleanup_artifacts"] = artifacts
     # Preserve the pre-existing field for callers that consumed the alias
     # before cleanup_artifacts became the canonical receipt field.
-    report["artifacts"] = artifacts
+    report["artifacts"] = artifacts.copy()
     report["cleanup_errors"] = list(failure.cleanup_errors)
 
 
