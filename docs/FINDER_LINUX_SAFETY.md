@@ -35,8 +35,9 @@ modifies an existing database.
    not a reopened path. Entry/inode/time checks detect deletion/substitution
    and return rejection; these checks are not the access-control mechanism.
    Descriptor pinning is.
-4. SQLite connects only to `:memory:`. Use Python 3.12's SQLite image API to
-   deserialize a bounded existing image and serialize a committed new image.
+4. SQLite connects only to `:memory:`. The reproducible setup pins Python
+   **3.11.13** and requires its `Connection.deserialize`/`serialize` image APIs
+   to deserialize a bounded existing image and serialize a committed new image.
    SQLite never opens a filesystem database path or journal. Unsupported image
    APIs reject file operations before the target is read. Unreadable,
    inconsistent or unsupported images fail closed. This is not a live database

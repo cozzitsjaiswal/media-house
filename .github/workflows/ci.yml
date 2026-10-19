@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, "publish/finder-hardening"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python 3.11 checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          check-latest: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.13.0"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Install locked environment
+        run: uv sync --locked
+
+      - name: Run full test suite
+        run: uv run --locked python -m unittest discover -s tests -v
+
+      - name: Compile Python sources
+        run: uv run --locked python -m compileall -q media_house tests
+
+      - name: Smoke-test CLI
+        run: uv run --locked media-house --help

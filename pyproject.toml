@@ -7,7 +7,7 @@ name = "media-house-revenue-engine"
 version = "0.1.0"
 description = "Dependency-free local Media House revenue-engine and lead-discovery CLI"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = "==3.11.*"
 dependencies = []
 
 [project.scripts]

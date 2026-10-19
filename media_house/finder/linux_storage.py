@@ -76,6 +76,7 @@ class StorageFailure(Exception):
 def _attach_failure_report(report: dict[str, Any], failure: StorageFailure) -> None:
     """Attach the recovery-relevant storage receipt fields to an app report."""
 
+    artifacts = list(failure.artifacts)
     report["error"] = f"{report.get('error', str(failure))}; cleanup failure: {failure}"
     report["rejected"] = True
     report["importable"] = False
@@ -87,7 +88,10 @@ def _attach_failure_report(report: dict[str, Any], failure: StorageFailure) -> N
     report["storage_code"] = failure.code
     report["installed"] = bool(failure.installed)
     report["durability_confirmed"] = bool(failure.durability_confirmed)
-    report["artifacts"] = list(failure.artifacts)
+    report["cleanup_artifacts"] = artifacts
+    # Preserve the pre-existing field for callers that consumed the alias
+    # before cleanup_artifacts became the canonical receipt field.
+    report["artifacts"] = artifacts.copy()
     report["cleanup_errors"] = list(failure.cleanup_errors)
 
 
@@ -865,6 +869,7 @@ def _probe_capabilities(boundary: _LinuxSyscalls, parent_fd: int) -> None:
     probe_name = f".finder-capability-{uuid.uuid4().hex}.probe"
     probe_fd: int | None = None
     linked = False
+    linked_stat: os.stat_result | None = None
     primary: StorageFailure | None = None
     try:
         try:
@@ -898,8 +903,21 @@ def _probe_capabilities(boundary: _LinuxSyscalls, parent_fd: int) -> None:
 
         if linked:
             try:
+                current_stat = _entry_metadata(boundary, parent_fd, probe_name)
+                if linked_stat is None or not _same_image_stat(current_stat, linked_stat):
+                    raise _failure(
+                        "capability probe entry was substituted; refusing unsafe cleanup",
+                        code="capability_probe_cleanup_failed",
+                        cleanup_required=True,
+                        artifacts=(probe_name,),
+                    )
                 boundary.unlink(parent_fd, probe_name)
                 linked = False
+            except StorageFailure as exc:
+                primary = primary or exc
+                if probe_name not in primary.artifacts:
+                    primary.artifacts += (probe_name,)
+                    primary.cleanup_required = True
             except BaseException as exc:
                 primary = primary or _exception_failure(
                     exc,
@@ -1046,8 +1064,6 @@ def open_target(
         observed_target = _optional_lstat(path, code="target_observation_failed")
         if expected_exists is True and observed_target is None:
             raise _failure("expected existing database disappeared before final open", code="target_disappeared")
-        if expected_exists is True and observed_target is None:
-            raise _failure("expected existing database disappeared before final open", code="target_disappeared")
         if expected_exists is False and observed_target is not None:
             raise _failure("database target appeared before final open", code="target_race")
 
@@ -1071,7 +1087,7 @@ def open_target(
         if (
             observed_target is not None
             and current_target is not None
-            and not _identity_matches(observed_target, current_target)
+            and not _target_identity_matches(observed_target, current_target)
         ):
             raise _failure("database target was substituted before final open", code="target_substituted")
         if observed_target is not None and not _regular_single_link(observed_target):

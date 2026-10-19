@@ -21,6 +21,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 build/
+dist/
 
 # Project-scoped tool state and a separately managed agent-library checkout.
 # These contain generated artifacts or their own Git history, not application
