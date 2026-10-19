@@ -123,6 +123,14 @@ python3 -m media_house.cli --db .media_house/demo.sqlite3 meeting-record \
   --notes "Human-authored meeting notes"
 python3 -m media_house.cli --db .media_house/demo.sqlite3 meeting-list \
   --prospect-id 1
+python3 -m media_house.cli --db .media_house/demo.sqlite3 requirements-capture \
+  1 requirements-draft.json --actor "founder" --status DRAFT
+python3 -m media_house.cli --db .media_house/demo.sqlite3 requirements-list \
+  --meeting-id 1
+python3 -m media_house.cli --db .media_house/demo.sqlite3 requirements-export \
+  1 requirements-export.json
+python3 -m media_house.cli --db .media_house/demo.sqlite3 requirements-approve \
+  1 --actor "founder"
 python3 -m media_house.cli --db .media_house/demo.sqlite3 export-csv export.csv
 ```
 
@@ -133,6 +141,36 @@ Meeting recording policies are `not_recorded`, `permission_granted`, or
 `permission_denied`; the field records operator metadata only and does not
 enable recording or contact a provider. Notes require either
 `permission_granted` or `not_required_confirmed` metadata.
+
+## Requirements capture and approval
+
+Requirements JSON must follow the retained source-of-truth files
+[`CLIENT_REQUIREMENTS_TEMPLATE.md`](media_house_complete_documentation/media_house_starter/docs/CLIENT_REQUIREMENTS_TEMPLATE.md)
+and
+[`client_requirements.schema.json`](media_house_complete_documentation/media_house_starter/schemas/client_requirements.schema.json).
+Capture is allowed only for an existing completed meeting. The local store
+adds the linked `meeting_id` and `prospect_id`, assigns the next document
+version, preserves the source/status label on every requirement, and records a
+content hash.
+
+The supported requirement status labels are exactly
+`CLIENT_STATED`, `OBSERVED`, `PROPOSED`, `ASSUMPTION`, `OPEN_QUESTION`,
+`APPROVED`, and `OUT_OF_SCOPE`. The document lifecycle is:
+
+- `DRAFT`: captured working notes; exportable, but not approved.
+- `NEEDS_CLARIFICATION`: unresolved information prevents review.
+- `READY_FOR_REVIEW`: complete enough for a human approval decision; it is
+  still not approved.
+- `APPROVED`: created only by `requirements-approve` with a human actor,
+  timestamp and matching version hash. Every requirement must already be
+  explicitly `APPROVED` or `OUT_OF_SCOPE`; no other label is promoted silently.
+- `SUPERSEDED`: an older approved baseline retained for history after an
+  explicitly linked newer version is approved.
+
+An approved baseline cannot be edited in place. Capture a new version with
+`--supersedes-id` and approve that version explicitly. No requirements command
+sends messages, invokes a calendar, records/transcribes meetings, creates a
+proposal, verifies payment, or deploys software.
 
 ## Checks
 
