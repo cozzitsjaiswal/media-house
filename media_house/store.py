@@ -200,7 +200,7 @@ CREATE INDEX IF NOT EXISTS meetings_prospect_index ON meetings(prospect_id);
 
 CREATE TABLE IF NOT EXISTS requirements_documents (
     id INTEGER PRIMARY KEY,
-    prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE RESTRICT,
     meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE RESTRICT,
     document_version INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (
@@ -218,6 +218,16 @@ CREATE TABLE IF NOT EXISTS requirements_documents (
 );
 CREATE INDEX IF NOT EXISTS requirements_documents_prospect_index ON requirements_documents(prospect_id);
 CREATE INDEX IF NOT EXISTS requirements_documents_meeting_index ON requirements_documents(meeting_id);
+
+CREATE TRIGGER IF NOT EXISTS prevent_prospect_delete_with_requirements_history
+BEFORE DELETE ON prospects
+FOR EACH ROW
+WHEN EXISTS (
+    SELECT 1 FROM requirements_documents WHERE prospect_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'cannot delete prospect with requirements history');
+END;
 
 CREATE TABLE IF NOT EXISTS outreach_drafts (
     id INTEGER PRIMARY KEY,
@@ -563,7 +573,7 @@ class MediaHouseStore:
         try:
             yield
             self.connection.commit()
-        except Exception:
+        except BaseException:
             self.connection.rollback()
             raise
 
@@ -1372,9 +1382,22 @@ class MediaHouseStore:
             path = Path(destination)  # type: ignore[arg-type]
             destination_label = str(path)
             destination_type = "file"
+            sqlite_filename = next(
+                row["file"] for row in self.connection.execute("PRAGMA database_list") if row["name"] == "main"
+            )
             try:
-                if self.database not in {":memory:", ""} and path.resolve() == Path(self.database).resolve():
-                    raise ValidationError("requirements export destination must not overwrite the active SQLite database")
+                if sqlite_filename:
+                    sqlite_path = Path(sqlite_filename)
+                    # SQLite can retain a symlink spelling for its companion files.
+                    protected_paths = {
+                        Path(f"{filename}{suffix}").resolve()
+                        for filename in (sqlite_path, sqlite_path.resolve())
+                        for suffix in ("", "-wal", "-shm", "-journal")
+                    }
+                    if path.resolve() in protected_paths:
+                        raise ValidationError(
+                            "requirements export destination must not overwrite the active SQLite database or its companion files"
+                        )
             except RuntimeError as exc:
                 raise ValidationError(f"requirements export destination could not be resolved: {exc}") from exc
         staged_path: Path | None = None

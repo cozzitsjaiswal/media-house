@@ -165,6 +165,9 @@ An approved baseline cannot be edited in place. Capture a new version with
 sends messages, invokes a calendar, records/transcribes meetings, creates a
 proposal, verifies payment, or deploys software.
 
+A prospect with any requirements history cannot be deleted, preserving draft,
+approved, and superseded records for history.
+
 ### Capture and approve an initial baseline
 
 Start with a recorded meeting that has no approved requirements baseline. Set
@@ -271,8 +274,13 @@ filesystem failure. No broad deletion or automatic retry is performed.
 Replacement files use the temporary file's restrictive permissions (normally
 `0600` on Linux), rather than preserving the old destination's permissions.
 Replacing a destination symlink replaces the link, not its target. The active
-configured SQLite database/resolved aliases are rejected as output destinations;
-this is a narrow safety guard, not comprehensive hostile-path/race protection.
+SQLite main database and its `-wal`, `-shm`, and `-journal` companion paths,
+including resolved aliases, are rejected before output-directory creation,
+staging, or audit writes. The guard uses the open connection's filename and
+resolved main path, retaining SQLite's symlink spelling for companion names;
+changing the working directory does not change which database is protected.
+This is a narrow safety guard, not protection for caller-opened streams or
+comprehensive hostile-path/race protection.
 
 ## Checks
 

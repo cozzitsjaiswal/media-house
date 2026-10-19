@@ -438,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(store.list_payment_requests(order_id=arguments.order_id), ensure_ascii=False, indent=2))
             else:  # pragma: no cover - argparse enforces the command set.
                 parser.error(f"unknown command {arguments.command}")
-    except (MediaHouseError, OSError, sqlite3.Error, OverflowError) as exc:
+    except (MediaHouseError, OSError, sqlite3.Error, OverflowError, UnicodeError) as exc:
         if isinstance(exc, FinderError) and exc.report is not None:
             print(json.dumps(exc.report, ensure_ascii=False, indent=2, sort_keys=True))
         code = f" [{exc.code}]" if isinstance(exc, (DiscoveryError, FinderError)) else ""
