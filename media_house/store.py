@@ -1386,6 +1386,7 @@ class MediaHouseStore:
                 row["file"] for row in self.connection.execute("PRAGMA database_list") if row["name"] == "main"
             )
             try:
+                destination_resolved = path.resolve()
                 if sqlite_filename:
                     sqlite_path = Path(sqlite_filename)
                     # SQLite can retain a symlink spelling for its companion files.
@@ -1394,11 +1395,13 @@ class MediaHouseStore:
                         for filename in (sqlite_path, sqlite_path.resolve())
                         for suffix in ("", "-wal", "-shm", "-journal")
                     }
-                    if path.resolve() in protected_paths:
+                    if destination_resolved in protected_paths:
                         raise ValidationError(
                             "requirements export destination must not overwrite the active SQLite database or its companion files"
                         )
-            except RuntimeError as exc:
+                if path.is_symlink():
+                    path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
                 raise ValidationError(f"requirements export destination could not be resolved: {exc}") from exc
         staged_path: Path | None = None
         audit_committed = False
