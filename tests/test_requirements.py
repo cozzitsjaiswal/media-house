@@ -192,11 +192,45 @@ class RequirementsWorkflowTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.capture(invalid_data)
 
+    def test_schema_compatible_goal_strings_and_explicit_nulls_are_handled(self) -> None:
+        valid_document = requirements_document()
+        valid_document["goals"][0]["baseline"] = "Not measured yet"
+        valid_document["goals"][0]["target"] = "Within 30 days"
+        captured = self.capture(valid_document)
+        self.assertEqual("Not measured yet", captured["document"]["goals"][0]["baseline"])
+
+        for label, mutate in (
+            ("client.region", lambda document: document["client"].update(region=None)),
+            (
+                "ai_constraints.allowed_actions",
+                lambda document: document["ai_constraints"].update(allowed_actions=None),
+            ),
+            ("commercial.currency", lambda document: document["commercial"].update(currency=None)),
+        ):
+            with self.subTest(label=label):
+                invalid_document = requirements_document()
+                mutate(invalid_document)
+                with self.assertRaises(ValidationError):
+                    self.capture(invalid_document)
+
+    def test_malformed_enum_shapes_are_rejected_as_validation_errors(self) -> None:
+        for label, mutate in (
+            ("document status", lambda document: document.update(status=[])),
+            ("requirement status", lambda document: document["requirements"][0].update(status=[])),
+            ("hosting mode", lambda document: document["data_handling"].update(hosting_mode=[])),
+            ("preferred language", lambda document: document["client"].update(preferred_languages=[[]])),
+        ):
+            with self.subTest(label=label):
+                invalid_document = requirements_document()
+                mutate(invalid_document)
+                with self.assertRaises(ValidationError):
+                    self.capture(invalid_document)
+
     def test_ready_draft_exports_without_false_approval_and_records_export(self) -> None:
         document = requirements_document(status="READY_FOR_REVIEW")
         record = self.capture(document)
         output = io.StringIO()
-        exported = self.store.export_requirements(int(record["id"]), output)
+        exported = self.store.export_requirements(int(record["id"]), output, actor="reviewer")
         self.assertEqual("READY_FOR_REVIEW", exported["status"])
         self.assertIsNone(exported["approval"])
         self.assertEqual(exported, json.loads(output.getvalue()))
@@ -231,6 +265,32 @@ class RequirementsWorkflowTests(unittest.TestCase):
         events = self.store.list_audit_events(action="requirements_approved")
         self.assertEqual(1, len(events))
         self.assertEqual(before_hash, events[0]["metadata"]["scope_version_hash"])
+
+    def test_approved_export_rejects_tampered_approval_metadata(self) -> None:
+        record = self.capture(requirements_document(status="READY_FOR_REVIEW", all_approved=True))
+        approved = self.store.approve_requirements(
+            int(record["id"]), actor="founder", approved_at="2026-10-20T12:00:00Z"
+        )
+        tampered = copy.deepcopy(approved["document"])
+        tampered["approval"]["scope_version_hash"] = "0" * 64
+        self.store.connection.execute(
+            "UPDATE requirements_documents SET content_json = ? WHERE id = ?",
+            (json.dumps(tampered, sort_keys=True, separators=(",", ":")), int(approved["id"])),
+        )
+        self.store.connection.commit()
+
+        with self.assertRaises(ValidationError):
+            self.store.export_requirements(int(approved["id"]), io.StringIO(), actor="reviewer")
+
+        tampered["status"] = "DRAFT"
+        tampered["approval"] = None
+        self.store.connection.execute(
+            "UPDATE requirements_documents SET content_json = ? WHERE id = ?",
+            (json.dumps(tampered, sort_keys=True, separators=(",", ":")), int(approved["id"])),
+        )
+        self.store.connection.commit()
+        with self.assertRaises(ValidationError):
+            self.store.export_requirements(int(approved["id"]), io.StringIO(), actor="reviewer")
 
     def test_approved_baseline_requires_explicit_new_version_and_superseding_audit(self) -> None:
         first = self.capture(requirements_document(status="READY_FOR_REVIEW", all_approved=True))
@@ -312,7 +372,8 @@ class RequirementsWorkflowTests(unittest.TestCase):
         export_path = self.directory / "exported-requirements.json"
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             status = main(
-                ["--db", str(database), "requirements-export", str(document_id), str(export_path)]
+                ["--db", str(database), "requirements-export", str(document_id), str(export_path),
+                 "--actor", "reviewer"]
             )
         self.assertEqual(0, status)
         self.assertEqual("READY_FOR_REVIEW", json.loads(export_path.read_text(encoding="utf-8"))["status"])

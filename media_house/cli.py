@@ -28,11 +28,12 @@ def _reject_json_constant(value: str) -> None:
 
 def _load_requirements_document(path: Path) -> dict[str, object]:
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_REQUIREMENTS_INPUT_BYTES + 1)
         if len(payload) > MAX_REQUIREMENTS_INPUT_BYTES:
             raise ValueError(f"requirements JSON exceeds the {MAX_REQUIREMENTS_INPUT_BYTES}-byte limit")
         value = json.loads(payload, parse_constant=_reject_json_constant)
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
         raise ValidationError(f"requirements JSON could not be read: {exc}") from exc
     if not isinstance(value, dict):
         raise ValidationError("requirements JSON must contain an object")
@@ -123,6 +124,7 @@ def _parser() -> argparse.ArgumentParser:
     requirements_export.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
     requirements_export.add_argument("document_id", type=int)
     requirements_export.add_argument("output", type=Path, help="JSON output path, or - for stdout")
+    requirements_export.add_argument("--actor", required=True, help="human actor exporting the requirements")
 
     requirements_approve = subparsers.add_parser(
         "requirements-approve", help="explicitly approve a READY_FOR_REVIEW requirements baseline"
@@ -371,9 +373,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif arguments.command == "requirements-export":
                 if str(arguments.output) == "-":
-                    store.export_requirements(arguments.document_id, sys.stdout)
+                    store.export_requirements(arguments.document_id, sys.stdout, actor=arguments.actor)
                 else:
-                    store.export_requirements(arguments.document_id, arguments.output)
+                    store.export_requirements(arguments.document_id, arguments.output, actor=arguments.actor)
                     print(json.dumps({"exported": True, "output": str(arguments.output)}, sort_keys=True), file=sys.stderr)
             elif arguments.command == "requirements-approve":
                 result = store.approve_requirements(
@@ -436,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(store.list_payment_requests(order_id=arguments.order_id), ensure_ascii=False, indent=2))
             else:  # pragma: no cover - argparse enforces the command set.
                 parser.error(f"unknown command {arguments.command}")
-    except (MediaHouseError, OSError, sqlite3.Error) as exc:
+    except (MediaHouseError, OSError, sqlite3.Error, OverflowError) as exc:
         if isinstance(exc, FinderError) and exc.report is not None:
             print(json.dumps(exc.report, ensure_ascii=False, indent=2, sort_keys=True))
         code = f" [{exc.code}]" if isinstance(exc, (DiscoveryError, FinderError)) else ""
