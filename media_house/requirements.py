@@ -71,23 +71,31 @@ def normalize_approval_timestamp(value: object) -> str:
 
 
 def _require_mapping(value: object, field: str) -> dict[str, object]:
+    """Require that a field's value is a JSON object, returning it unchanged."""
+
     if not isinstance(value, dict):
         raise ValidationError(f"{field} must be an object")
     return value
 
 
 def _required_string(value: object, field: str) -> str:
+    """Require a non-empty string value for a field."""
+
     if not isinstance(value, str) or not canonical_text(value):
         raise ValidationError(f"{field} must be a non-empty string")
     return value
 
 
 def _optional_string(value: object, field: str) -> None:
+    """Require that an optional field, if present, is a string."""
+
     if value is not _MISSING and not isinstance(value, str):
         raise ValidationError(f"{field} must be a string")
 
 
 def _string_list(value: object, field: str, *, required: bool = False) -> None:
+    """Require that a field is a list of strings, unless missing and optional."""
+
     if value is _MISSING and not required:
         return
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
@@ -95,6 +103,8 @@ def _string_list(value: object, field: str, *, required: bool = False) -> None:
 
 
 def _number_or_null(value: object, field: str) -> None:
+    """Require that an optional field is a number or null."""
+
     if value is _MISSING:
         return
     if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
@@ -102,6 +112,8 @@ def _number_or_null(value: object, field: str) -> None:
 
 
 def _string_number_or_null(value: object, field: str) -> None:
+    """Require that a field is a string, number, or null."""
+
     if value is not None and not isinstance(value, str) and (
         isinstance(value, bool) or not isinstance(value, (int, float))
     ):
@@ -109,6 +121,8 @@ def _string_number_or_null(value: object, field: str) -> None:
 
 
 def _validate_client(value: object) -> None:
+    """Validate the client section of a requirements document."""
+
     client = _require_mapping(value, "client")
     _required_string(client.get("business_name"), "client.business_name")
     _required_string(client.get("industry"), "client.industry")
@@ -123,6 +137,8 @@ def _validate_client(value: object) -> None:
 
 
 def _validate_business_problem(value: object) -> None:
+    """Validate the business_problem section of a requirements document."""
+
     problem = _require_mapping(value, "business_problem")
     _required_string(problem.get("client_statement"), "business_problem.client_statement")
     _string_list(problem.get("current_workflow"), "business_problem.current_workflow", required=True)
@@ -131,6 +147,8 @@ def _validate_business_problem(value: object) -> None:
 
 
 def _validate_scope(value: object) -> None:
+    """Validate the scope section of a requirements document."""
+
     scope = _require_mapping(value, "scope")
     _string_list(scope.get("included"), "scope.included", required=True)
     _string_list(scope.get("excluded"), "scope.excluded", required=True)
@@ -139,6 +157,8 @@ def _validate_scope(value: object) -> None:
 
 
 def _validate_data_handling(value: object) -> None:
+    """Validate the data_handling section of a requirements document."""
+
     data = _require_mapping(value, "data_handling")
     hosting_mode = data.get("hosting_mode")
     if not isinstance(hosting_mode, str) or hosting_mode not in HOSTING_MODES:
@@ -152,6 +172,8 @@ def _validate_data_handling(value: object) -> None:
 
 
 def _validate_requirements(value: object) -> None:
+    """Validate the requirements list, including unique ids, status, and priority."""
+
     if not isinstance(value, list):
         raise ValidationError("requirements must be a list")
     seen: set[str] = set()
@@ -175,6 +197,8 @@ def _validate_requirements(value: object) -> None:
 
 
 def _validate_acceptance_criteria(value: object) -> None:
+    """Validate the acceptance_criteria list, including unique ids."""
+
     if not isinstance(value, list):
         raise ValidationError("acceptance_criteria must be a list")
     seen: set[str] = set()
@@ -190,6 +214,8 @@ def _validate_acceptance_criteria(value: object) -> None:
 
 
 def _validate_optional_sections(document: Mapping[str, object]) -> None:
+    """Validate the optional goals, integrations, ai_constraints, and commercial sections."""
+
     goals = document.get("goals", _MISSING)
     if goals is not _MISSING:
         if not isinstance(goals, list):
@@ -237,6 +263,8 @@ def _validate_optional_sections(document: Mapping[str, object]) -> None:
 
 
 def _validate_approval(value: object, *, required: bool) -> None:
+    """Validate approval metadata, or require its absence/presence as needed."""
+
     if value is None:
         if required:
             raise ValidationError("approved requirements require approval metadata")

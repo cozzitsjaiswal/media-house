@@ -1,3 +1,5 @@
+"""Tests for the requirements capture, approval, and export workflow."""
+
 from __future__ import annotations
 
 import copy
@@ -16,6 +18,7 @@ from media_house.store import CSV_COLUMNS, MediaHouseStore
 
 
 def lead_row(**overrides: str) -> dict[str, str]:
+    """Build a synthetic CSV lead row, applying any field overrides."""
     row = {column: "" for column in CSV_COLUMNS}
     row.update(
         {
@@ -42,6 +45,7 @@ def lead_row(**overrides: str) -> dict[str, str]:
 
 
 def write_csv(directory: Path, rows: list[dict[str, str]]) -> Path:
+    """Write the given rows to a synthetic leads CSV file and return its path."""
     path = directory / "requirements-leads.csv"
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
@@ -51,6 +55,7 @@ def write_csv(directory: Path, rows: list[dict[str, str]]) -> Path:
 
 
 def requirements_document(*, status: str = "DRAFT", all_approved: bool = False) -> dict[str, object]:
+    """Build a synthetic, schema-valid requirements document for tests."""
     statuses = (
         ("APPROVED", "OUT_OF_SCOPE", "APPROVED", "OUT_OF_SCOPE", "APPROVED", "OUT_OF_SCOPE", "APPROVED")
         if all_approved
@@ -134,7 +139,10 @@ def requirements_document(*, status: str = "DRAFT", all_approved: bool = False) 
 
 
 class RequirementsWorkflowTests(unittest.TestCase):
+    """Tests covering the end-to-end requirements capture/approve/export workflow."""
+
     def setUp(self) -> None:
+        """Create an in-memory store with a prospect, import, and recorded meeting."""
         self.store = MediaHouseStore(":memory:")
         self.tempdir = tempfile.TemporaryDirectory()
         self.directory = Path(self.tempdir.name)
@@ -150,15 +158,18 @@ class RequirementsWorkflowTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        """Close the store and remove the temporary directory."""
         self.store.close()
         self.tempdir.cleanup()
 
     def capture(self, document: dict[str, object], **kwargs: object) -> dict[str, object]:
+        """Capture requirements for the fixture meeting as the founder actor."""
         return self.store.capture_requirements(
             int(self.meeting["id"]), document, actor="founder", **kwargs
         )
 
     def test_capture_is_tied_to_meeting_and_preserves_all_requirement_statuses(self) -> None:
+        """Verify captured documents link to the meeting and keep all requirement statuses intact."""
         record = self.capture(requirements_document())
         document = record["document"]
         self.assertEqual(int(self.meeting["id"]), record["meeting_id"])
@@ -174,6 +185,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(self.store.list_audit_events(action="requirements_created")))
 
     def test_unknown_meeting_and_invalid_status_or_schema_are_rejected(self) -> None:
+        """Verify capture rejects unknown meetings and schema-invalid documents."""
         with self.assertRaises(NotFoundError):
             self.store.capture_requirements(999, requirements_document(), actor="founder")
 
@@ -193,6 +205,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
             self.capture(invalid_data)
 
     def test_schema_compatible_goal_strings_and_explicit_nulls_are_handled(self) -> None:
+        """Verify string goal values are accepted and required fields reject explicit nulls."""
         valid_document = requirements_document()
         valid_document["goals"][0]["baseline"] = "Not measured yet"
         valid_document["goals"][0]["target"] = "Within 30 days"
@@ -214,6 +227,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
                     self.capture(invalid_document)
 
     def test_malformed_enum_shapes_are_rejected_as_validation_errors(self) -> None:
+        """Verify non-string enum-like fields raise ValidationError instead of being coerced."""
         for label, mutate in (
             ("document status", lambda document: document.update(status=[])),
             ("requirement status", lambda document: document["requirements"][0].update(status=[])),
@@ -227,6 +241,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
                     self.capture(invalid_document)
 
     def test_ready_draft_exports_without_false_approval_and_records_export(self) -> None:
+        """Verify a READY_FOR_REVIEW document exports with no approval and logs an export audit event."""
         document = requirements_document(status="READY_FOR_REVIEW")
         record = self.capture(document)
         output = io.StringIO()
@@ -238,6 +253,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(self.store.list_audit_events(action="requirements_exported")))
 
     def test_approval_rejects_nonhuman_actor_invalid_timestamp_and_unresolved_statuses(self) -> None:
+        """Verify approval rejects non-human actors, malformed timestamps, and unresolved requirement statuses."""
         record = self.capture(requirements_document(status="READY_FOR_REVIEW"))
         with self.assertRaises(ApprovalError):
             self.store.approve_requirements(int(record["id"]), actor="automation")
@@ -250,6 +266,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
         self.assertEqual("READY_FOR_REVIEW", self.store.get_requirements_document(int(record["id"]))["status"])
 
     def test_explicit_approval_records_version_hash_and_audit(self) -> None:
+        """Verify a valid approval records the actor, timestamp, content hash, and audit event."""
         document = requirements_document(status="READY_FOR_REVIEW", all_approved=True)
         record = self.capture(document)
         before_hash = record["content_hash"]
@@ -267,6 +284,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
         self.assertEqual(before_hash, events[0]["metadata"]["scope_version_hash"])
 
     def test_approved_export_rejects_tampered_approval_metadata(self) -> None:
+        """Verify export rejects documents whose stored approval metadata has been tampered with."""
         record = self.capture(requirements_document(status="READY_FOR_REVIEW", all_approved=True))
         approved = self.store.approve_requirements(
             int(record["id"]), actor="founder", approved_at="2026-10-20T12:00:00Z"
@@ -293,6 +311,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
             self.store.export_requirements(int(approved["id"]), io.StringIO(), actor="reviewer")
 
     def test_approved_baseline_requires_explicit_new_version_and_superseding_audit(self) -> None:
+        """Verify re-capturing an approved baseline requires a new version and records a superseding audit event."""
         first = self.capture(requirements_document(status="READY_FOR_REVIEW", all_approved=True))
         first = self.store.approve_requirements(int(first["id"]), actor="founder")
         unchanged = copy.deepcopy(first["document"])
@@ -321,6 +340,7 @@ class RequirementsWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(self.store.list_audit_events(action="requirements_superseded")))
 
     def test_cli_capture_list_export_and_approve_use_synthetic_data(self) -> None:
+        """Verify the CLI capture, list, show, export, and approve commands work end-to-end."""
         database = self.directory / "requirements-cli.sqlite3"
         with MediaHouseStore(database) as store:
             store.import_csv(write_csv(self.directory, [lead_row()]), researcher="human-researcher")

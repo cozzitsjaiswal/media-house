@@ -26,15 +26,21 @@ LICENSE_URL = "https://opendatacommons.org/licenses/odbl/1-0/"
 
 
 def invalid_config(message: str) -> DiscoveryError:
+    """Build a DiscoveryError coded as an invalid configuration."""
+
     return DiscoveryError(message, code="invalid_config")
 
 
 def bounded_integer(value: int, minimum: int, maximum: int, field: str) -> None:
+    """Require that a field is an integer within an inclusive range."""
+
     if type(value) is not int or not minimum <= value <= maximum:
         raise invalid_config(f"{field} must be an integer from {minimum} to {maximum}")
 
 
 def source_metadata() -> dict[str, str]:
+    """Return the fixed OpenStreetMap/Overpass attribution and license metadata."""
+
     return {
         "source_name": SOURCE_NAME,
         "attribution": ATTRIBUTION,
@@ -54,6 +60,8 @@ class BoundingBox:
     east: float
 
     def __post_init__(self) -> None:
+        """Validate that the bounding box is finite, ordered, and within size bounds."""
+
         values = (self.south, self.west, self.north, self.east)
         if any(type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)) for value in values):
             raise invalid_config("bbox coordinates must be finite numbers")
@@ -66,6 +74,8 @@ class BoundingBox:
 
     @property
     def area_km2(self) -> float:
+        """Return the approximate area of the bounding box in square kilometres."""
+
         return (
             6371.0088 ** 2
             * math.radians(self.east - self.west)
@@ -73,10 +83,14 @@ class BoundingBox:
         )
 
     def as_list(self) -> list[float]:
+        """Return the bounding box as a [south, west, north, east] list of floats."""
+
         return [float(self.south), float(self.west), float(self.north), float(self.east)]
 
     @classmethod
     def parse(cls, text: str) -> "BoundingBox":
+        """Parse a 'south,west,north,east' comma-separated string into a BoundingBox."""
+
         try:
             values = [float(part.strip()) for part in text.split(",")]
             if len(values) != 4:
@@ -88,10 +102,14 @@ class BoundingBox:
 
 @dataclass(frozen=True, order=True)
 class CategoryFilter:
+    """A single OSM key=value tag filter used to build the Overpass query."""
+
     key: str
     value: str
 
     def __post_init__(self) -> None:
+        """Validate that the key and value are safe, bounded OSM tag text."""
+
         if not isinstance(self.key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_:.-]{0,63}", self.key):
             raise invalid_config("filter keys must be simple OSM tag keys, at most 64 characters")
         if (
@@ -108,15 +126,21 @@ class CategoryFilter:
 
     @classmethod
     def parse(cls, text: str) -> "CategoryFilter":
+        """Parse a 'key=value' string into a CategoryFilter."""
+
         key, separator, value = text.partition("=")
         if not separator:
             raise invalid_config("filters must use key=value, for example amenity=restaurant or shop=*")
         return cls(key.strip(), value.strip())
 
     def __str__(self) -> str:
+        """Return the filter in 'key=value' form."""
+
         return f"{self.key}={self.value}"
 
     def as_ql(self) -> str:
+        """Render the filter as an Overpass QL tag-match clause."""
+
         # JSON string quoting also safely escapes QL quotes and backslashes.
         key = json.dumps(self.key, ensure_ascii=False)
         if self.value == "*":
@@ -126,6 +150,8 @@ class CategoryFilter:
 
 @dataclass(frozen=True)
 class DiscoveryConfig:
+    """Validated, bounded configuration for one Overpass discovery query."""
+
     bbox: BoundingBox
     geography: str
     filters: tuple[CategoryFilter, ...]
@@ -136,6 +162,8 @@ class DiscoveryConfig:
     cache_ttl: int = 86400
 
     def __post_init__(self) -> None:
+        """Validate and normalize every configuration field in place."""
+
         if not isinstance(self.bbox, BoundingBox):
             raise invalid_config("bbox must be a BoundingBox")
         if (
@@ -185,11 +213,15 @@ class DiscoveryConfig:
 
 @dataclass(frozen=True)
 class DiscoveryPlan:
+    """A built, reviewable Overpass query plan plus its deterministic cache key."""
+
     config: DiscoveryConfig
     query: str
     cache_key: str
 
     def as_dict(self) -> dict[str, object]:
+        """Return the plan as a plain dict including source attribution metadata."""
+
         return {
             "endpoint": self.config.endpoint,
             "geography": self.config.geography,
@@ -205,6 +237,8 @@ class DiscoveryPlan:
 
 
 def build_plan(config: DiscoveryConfig) -> DiscoveryPlan:
+    """Build the Overpass QL query and deterministic cache key for a configuration."""
+
     bbox = ",".join(format(number, ".15g") for number in config.bbox.as_list())
     clauses = "\n".join(f"  nwr{item.as_ql()}({bbox});" for item in config.filters)
     query = (

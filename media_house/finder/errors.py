@@ -26,6 +26,8 @@ class FinderError(MediaHouseError):
         code: str = "finder_error",
         report: dict[str, Any] | None = None,
     ) -> None:
+        """Store the message plus an optional local processing report."""
+
         super().__init__(message)
         self.code = code
         self.report = report

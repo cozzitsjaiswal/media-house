@@ -174,6 +174,8 @@ SCHEMA_STATEMENTS = (
 
 @dataclass(frozen=True)
 class _Candidate:
+    """A parsed, normalized record candidate from saved input or storage."""
+
     index: int
     source_object_id: str
     source_url: str
@@ -189,6 +191,8 @@ class _Candidate:
 
 @dataclass(frozen=True)
 class _NoveltyEvidence:
+    """Validated attestation that a saved batch is complete, authoritative, and new."""
+
     source_id: str
     snapshot_id: str
     completeness: str
@@ -200,6 +204,8 @@ class _NoveltyEvidence:
 
 @dataclass(frozen=True)
 class _ParsedBatch:
+    """A saved-input batch split into parsed candidates and malformed records."""
+
     raw_records: list[object]
     parsed: dict[int, _Candidate]
     malformed: dict[int, tuple[str | None, str]]
@@ -207,10 +213,14 @@ class _ParsedBatch:
 
     @property
     def candidates(self) -> list[_Candidate]:
+        """Return the successfully parsed candidates as a list."""
+
         return list(self.parsed.values())
 
 
 def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object hook that rejects duplicate keys."""
+
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
@@ -220,10 +230,14 @@ def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _reject_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN or Infinity."""
+
     raise ValueError(f"non-standard JSON constant {value!r}")
 
 
 def _empty_report(mode: str, *, error: str | None = None) -> dict[str, Any]:
+    """Build a zero-record report shell for a given mode, optionally with an error."""
+
     report: dict[str, Any] = {
         "format": FORMAT,
         "schema_version": SCHEMA_VERSION,
@@ -246,10 +260,14 @@ def _empty_report(mode: str, *, error: str | None = None) -> dict[str, Any]:
 
 
 def _error(mode: str, message: str, *, code: str) -> FinderError:
+    """Build a FinderError carrying an empty rejection report for the given mode."""
+
     return FinderError(message, code=code, report=_empty_report(mode, error=message))
 
 
 def _is_unknown_placeholder(value: str) -> bool:
+    """Whether a string is a common unknown/placeholder value such as 'n/a'."""
+
     normalized = normalize_token(value)
     collapsed = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
     return is_unknown(value) or normalized in {
@@ -260,6 +278,8 @@ def _is_unknown_placeholder(value: str) -> bool:
 
 
 def _safe_text(value: object, field: str, *, reject_unknown: bool = True, allow_empty: bool = False) -> str:
+    """Validate and canonicalize a required string field, rejecting unsafe characters."""
+
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a string")
     try:
@@ -279,6 +299,8 @@ def _safe_text(value: object, field: str, *, reject_unknown: bool = True, allow_
 
 
 def _canonical_json_bytes(value: object) -> bytes:
+    """Serialize a value to canonical (sorted, compact) JSON bytes."""
+
     try:
         return json.dumps(
             value,
@@ -292,10 +314,14 @@ def _canonical_json_bytes(value: object) -> bytes:
 
 
 def _records_sha256(records: list[object]) -> str:
+    """Return the SHA-256 hex digest of the canonically serialized records list."""
+
     return hashlib.sha256(_canonical_json_bytes(records)).hexdigest()
 
 
 def _validate_novelty_evidence(raw: object, records: list[object]) -> _NoveltyEvidence:
+    """Validate the novelty_evidence contract and return it as a dataclass."""
+
     if not isinstance(raw, dict):
         raise ValueError(f"{_NOVELTY_EVIDENCE_FIELD} must be an object")
     extra = sorted(set(raw) - _NOVELTY_EVIDENCE_FIELDS)
@@ -324,6 +350,8 @@ def _validate_novelty_evidence(raw: object, records: list[object]) -> _NoveltyEv
 
 
 def _normalized_hostname(hostname: str | None, field: str) -> str:
+    """Validate and return a normalized, case-folded hostname or IP address."""
+
     if not hostname:
         raise ValueError(f"{field} must contain a hostname")
     try:
@@ -345,6 +373,8 @@ def _normalized_hostname(hostname: str | None, field: str) -> str:
 
 
 def _parsed_http_url(value: str, field: str, *, allow_bare_domain: bool = False) -> tuple[str, str]:
+    """Validate an HTTP(S) URL (or bare domain) and return its text and normalized hostname."""
+
     text = _safe_text(value, field)
     if any(character.isspace() for character in text):
         raise ValueError(f"{field} must not contain whitespace")
@@ -373,10 +403,14 @@ def _parsed_http_url(value: str, field: str, *, allow_bare_domain: bool = False)
 
 
 def _validate_finder_source_url(value: str) -> str:
+    """Validate a required absolute HTTP(S) source URL and return its text."""
+
     return _parsed_http_url(value, "source_url")[0]
 
 
 def _normalize_finder_website(value: object) -> tuple[str | None, str | None]:
+    """Normalize an optional website value to its text and normalized domain."""
+
     if value is None:
         return None, None
     text = _safe_text(value, "website", reject_unknown=False, allow_empty=True)
@@ -387,6 +421,8 @@ def _normalize_finder_website(value: object) -> tuple[str | None, str | None]:
 
 
 def _read_json(path: str | os.PathLike[str], *, mode: str) -> Mapping[str, object]:
+    """Read, size-check, and validate a saved finder JSON envelope."""
+
     try:
         with open(path, "rb") as handle:
             payload = handle.read(MAX_INPUT_BYTES + 1)
@@ -416,6 +452,8 @@ def _read_json(path: str | os.PathLike[str], *, mode: str) -> Mapping[str, objec
 
 
 def _parse_record(raw: object, index: int) -> tuple[_Candidate | None, str | None, str | None]:
+    """Parse and validate one saved record, returning a candidate or a failure reason."""
+
     source_object_id: str | None = None
     if isinstance(raw, dict) and isinstance(raw.get("source_object_id"), str):
         source_object_id = canonical_text(raw["source_object_id"])
@@ -467,6 +505,8 @@ def _parse_record(raw: object, index: int) -> tuple[_Candidate | None, str | Non
 
 
 def _parse_batch(envelope: Mapping[str, object]) -> _ParsedBatch:
+    """Parse every record in an envelope, separating candidates from malformed/duplicate ones."""
+
     raw_records = envelope["records"]
     assert isinstance(raw_records, list)
     novelty_evidence = None
@@ -494,10 +534,14 @@ def _parse_batch(envelope: Mapping[str, object]) -> _ParsedBatch:
 
 
 def _database_error(mode: str, message: str, *, code: str = "database_schema_invalid") -> FinderError:
+    """Build a FinderError for a database/schema failure with an empty rejection report."""
+
     return FinderError(message, code=code, report=_empty_report(mode, error=message))
 
 
 def _raw_schema_objects(connection: sqlite3.Connection, *, mode: str) -> set[tuple[str, str]]:
+    """Return the set of (type, name) schema objects present in the main database."""
+
     try:
         attached = connection.execute("PRAGMA database_list").fetchall()
         if any(row[1] != "main" for row in attached):
@@ -513,6 +557,8 @@ def _raw_schema_objects(connection: sqlite3.Connection, *, mode: str) -> set[tup
 
 
 def _validate_schema(connection: sqlite3.Connection, *, mode: str) -> None:
+    """Validate that the database schema exactly matches the expected Finder-only schema."""
+
     actual = _raw_schema_objects(connection, mode=mode)
     if actual != _EXPECTED_OBJECTS:
         unexpected = sorted(actual - _EXPECTED_OBJECTS)
@@ -557,6 +603,8 @@ def _validate_schema(connection: sqlite3.Connection, *, mode: str) -> None:
 
 
 def _stored_text(value: object, field: str) -> str:
+    """Validate a value already stored in the database, requiring it to be canonical."""
+
     text = _safe_text(value, field)
     if value != text:
         raise ValueError(f"stored {field} is not canonical")
@@ -564,6 +612,8 @@ def _stored_text(value: object, field: str) -> str:
 
 
 def _candidate_from_stored(row: sqlite3.Row, index: int) -> _Candidate:
+    """Reconstruct and revalidate a candidate from a stored finder_records row."""
+
     source_object_id = _stored_text(row["source_object_id"], "source_object_id")
     if not any(character.isalnum() for character in source_object_id):
         raise ValueError("stored source_object_id must contain an alphanumeric character")
@@ -593,6 +643,8 @@ def _candidate_from_stored(row: sqlite3.Row, index: int) -> _Candidate:
 
 
 def _read_existing_connection(connection: sqlite3.Connection, *, mode: str) -> list[_Candidate]:
+    """Read and revalidate all existing finder_records as candidates."""
+
     try:
         rows = connection.execute(
             """
@@ -618,6 +670,8 @@ def _read_existing_connection(connection: sqlite3.Connection, *, mode: str) -> l
 
 
 def _require_image_apis(*, mode: str, deserialize: bool, serialize: bool) -> None:
+    """Require that the running SQLite build supports the needed image APIs."""
+
     if deserialize and not callable(getattr(sqlite3.Connection, "deserialize", None)):
         raise _database_error(mode, "this Python SQLite build does not support image deserialization", code="unsupported_sqlite_image")
     if serialize and not callable(getattr(sqlite3.Connection, "serialize", None)):
@@ -625,6 +679,8 @@ def _require_image_apis(*, mode: str, deserialize: bool, serialize: bool) -> Non
 
 
 def _memory_connection(image: bytes | None, *, mode: str) -> sqlite3.Connection:
+    """Open an in-memory SQLite connection, optionally deserialized from an image."""
+
     if image is not None:
         _require_image_apis(mode=mode, deserialize=True, serialize=False)
     connection: sqlite3.Connection | None = None
@@ -648,6 +704,8 @@ def _memory_connection(image: bytes | None, *, mode: str) -> sqlite3.Connection:
 
 
 def _target_image(target: Any, *, mode: str) -> bytes | None:
+    """Read and validate the storage target's image bytes, if any."""
+
     try:
         target.verify_entry()
         image = target.read_image()
@@ -666,6 +724,8 @@ def _target_image(target: Any, *, mode: str) -> bytes | None:
 
 
 def _open_target_connection(target: Any, *, mode: str, require_serialize: bool = False) -> tuple[sqlite3.Connection, bytes | None]:
+    """Open an in-memory connection backed by a storage target's image, if present."""
+
     # The active linux_storage target intentionally exposes only image reads;
     # this keeps SQLite away from filesystem paths and journals.
     _require_image_apis(
@@ -678,10 +738,14 @@ def _open_target_connection(target: Any, *, mode: str, require_serialize: bool =
 
 
 def _same_stable_identity(left: _Candidate, right: _Candidate) -> bool:
+    """Whether two candidates share the same stable source object id or source URL."""
+
     return left.source_object_id == right.source_object_id or left.source_url == right.source_url
 
 
 def _same_identity_facts(left: _Candidate, right: _Candidate) -> bool:
+    """Whether two candidates with the same stable identity also agree on all identity facts."""
+
     return (
         left.source_object_id == right.source_object_id
         and left.source_url == right.source_url
@@ -692,6 +756,8 @@ def _same_identity_facts(left: _Candidate, right: _Candidate) -> bool:
 
 
 def _near_name_match(left: _Candidate, right: _Candidate) -> bool:
+    """Whether two candidates in the same region have a near-identical company name."""
+
     if left.normalized_region != right.normalized_region or left.normalized_name == right.normalized_name:
         return False
     return difflib.SequenceMatcher(
@@ -705,6 +771,8 @@ def _classify_candidates(
     *,
     novelty_evidence_valid: bool,
 ) -> dict[int, tuple[str, str]]:
+    """Classify each candidate against existing and sibling records as new or a duplicate kind."""
+
     domain_identity_counts: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for row in existing:
         if row.normalized_domain:
@@ -776,6 +844,8 @@ def _build_report(
     *,
     novelty_evidence_valid: bool = False,
 ) -> dict[str, Any]:
+    """Assemble the full classification report from parsed, malformed, and classified records."""
+
     records: list[dict[str, Any]] = []
     counts = {classification: 0 for classification in CLASSIFICATIONS}
     for index, _raw in enumerate(raw_records, start=1):
@@ -809,6 +879,8 @@ def _build_report(
 
 
 def _classify_batch(batch: _ParsedBatch, existing: list[_Candidate], *, mode: str) -> dict[str, Any]:
+    """Classify a parsed batch against existing records and build its report."""
+
     novelty_evidence_valid = batch.novelty_evidence is not None
     classifications = _classify_candidates(
         batch.candidates,
@@ -826,6 +898,8 @@ def _classify_batch(batch: _ParsedBatch, existing: list[_Candidate], *, mode: st
 
 
 def _classify_target(target: Any, batch: _ParsedBatch, *, mode: str) -> dict[str, Any]:
+    """Open a storage target, read existing records if any, and classify the batch."""
+
     connection, image = _open_target_connection(target, mode=mode)
     try:
         existing: list[_Candidate] = []
@@ -853,6 +927,8 @@ def open_target(
 
 
 def _storage_failure_report(report: dict[str, Any], failure: StorageFailure, *, candidate_count: int) -> dict[str, Any]:
+    """Augment a report in place with storage-failure and installation-state details."""
+
     installed = bool(failure.installed)
     report["error"] = str(failure)
     report["rejected"] = True
@@ -871,6 +947,8 @@ def _storage_failure_report(report: dict[str, Any], failure: StorageFailure, *, 
 
 
 def _storage_failure_error(mode: str, failure: StorageFailure) -> FinderError:
+    """Build a FinderError from a storage failure with an annotated empty report."""
+
     return FinderError(str(failure), code=failure.code, report=_storage_failure_report(_empty_report(mode), failure, candidate_count=0))
 
 
@@ -882,6 +960,8 @@ def _with_target(
     candidate_count: int,
     expected_exists: bool | None = None,
 ) -> dict[str, Any]:
+    """Open a storage target, run an operation against it, and translate failures to reports."""
+
     result: dict[str, Any] | None = None
     try:
         with open_target(database, workspace_root=_WORKSPACE_ROOT, expected_exists=expected_exists) as target:
@@ -941,11 +1021,15 @@ def _target_exists_hint(database: str | os.PathLike[str]) -> bool | None:
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:
+    """Create the Finder tables and indexes on a connection if not already present."""
+
     for statement in SCHEMA_STATEMENTS:
         connection.execute(statement)
 
 
 def _insert_new(connection: sqlite3.Connection, candidates: list[_Candidate], *, researcher: str) -> None:
+    """Insert each new candidate as a finder record plus its source evidence row."""
+
     recorded_at = utc_now()
     for candidate in candidates:
         cursor = connection.execute(
@@ -999,6 +1083,8 @@ def _insert_new(connection: sqlite3.Connection, candidates: list[_Candidate], *,
 
 
 def _validate_researcher(value: object) -> str:
+    """Require a non-machine human researcher identifier."""
+
     text = _safe_text(value, "researcher")
     if normalize_token(text) in _MACHINE_RESEARCHER_VALUES:
         raise ValueError("researcher must identify a human operator")
@@ -1006,6 +1092,8 @@ def _validate_researcher(value: object) -> str:
 
 
 def _report_rejection(report: dict[str, Any], message: str) -> dict[str, Any]:
+    """Mark a report in place as rejected with the given error message."""
+
     report["error"] = message
     report["rejected"] = True
     report["importable"] = False
@@ -1013,6 +1101,8 @@ def _report_rejection(report: dict[str, Any], message: str) -> dict[str, Any]:
 
 
 def _confirmed_target_import(target: Any, batch: _ParsedBatch, *, researcher: str) -> dict[str, Any]:
+    """Atomically insert an all-NEW confirmed batch into a storage target's database."""
+
     connection: sqlite3.Connection | None = None
     report: dict[str, Any] | None = None
     committed = False
@@ -1092,6 +1182,8 @@ def import_saved_input(
         return report
     if not confirm_import:
         def preview(target: Any) -> dict[str, Any]:
+            """Classify the batch against a target without writing, noting any researcher error."""
+
             report = _classify_target(target, batch, mode="import")
             if researcher is not None:
                 try:

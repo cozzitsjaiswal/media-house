@@ -14,13 +14,19 @@ MAX_JSON_BYTES = 8 * 1024 * 1024
 
 
 def decode_json(data: bytes) -> Any:
+    """Decode bounded JSON bytes, rejecting non-standard constants and duplicate keys."""
+
     if len(data) > MAX_JSON_BYTES:
         raise DiscoveryError("JSON exceeds the 8 MiB response/file limit; reduce the request", code="response_limit")
 
     def reject_constant(value: str) -> None:
+        """Reject non-standard JSON constants such as NaN or Infinity."""
+
         raise ValueError(f"non-JSON constant {value}")
 
     def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        """Build a JSON object hook that rejects duplicate keys."""
+
         result: dict[str, Any] = {}
         for key, value in pairs:
             if key in result:
@@ -35,6 +41,8 @@ def decode_json(data: bytes) -> Any:
 
 
 def read_json(path: Path) -> Any:
+    """Read and decode a bounded JSON file."""
+
     try:
         with path.open("rb") as handle:
             return decode_json(handle.read(MAX_JSON_BYTES + 1))
@@ -43,6 +51,8 @@ def read_json(path: Path) -> Any:
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
+    """Serialize a value to JSON and write it atomically via a staged temp file."""
+
     temporary: Path | None = None
     try:
         encoded = (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")

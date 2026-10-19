@@ -1,3 +1,5 @@
+"""Tests for CLI handling of malformed and multilingual actor/notes encoding."""
+
 from __future__ import annotations
 
 import io
@@ -17,7 +19,10 @@ from tests.test_requirements import lead_row, requirements_document, write_csv
 
 
 class RequirementsCLIEncodingTests(unittest.TestCase):
+    """Tests for CLI encoding boundaries across actor, notes, and document inputs."""
+
     def setUp(self) -> None:
+        """Seed a store with a prospect, meeting, captured document, and a multilingual input file."""
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
@@ -47,6 +52,7 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
         self.audits = self.store.list_audit_events()
 
     def cli(self, *args: str | bytes) -> subprocess.CompletedProcess[bytes]:
+        """Run the CLI as a subprocess with the given arguments, skipping where byte argv is unsupported."""
         if os.name != "posix" and any(isinstance(arg, bytes) for arg in args):
             self.skipTest("invalid-byte argv requires POSIX subprocess arguments")
         return subprocess.run(
@@ -55,6 +61,7 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
         )
 
     def assert_rejected(self, *args: str | bytes) -> subprocess.CompletedProcess[bytes]:
+        """Assert the CLI invocation is rejected cleanly with an encoding error and no state changes."""
         result = self.cli(*args)
         self.assertEqual(self.before, tuple(self.store.connection.iterdump()))
         self.assertEqual(self.audits, self.store.list_audit_events())
@@ -67,22 +74,26 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
         return result
 
     def test_capture_malformed_actor_is_controlled_and_atomic(self) -> None:
+        """Verify an invalid-byte actor argument to requirements-capture is rejected without side effects."""
         self.assert_rejected(
             "requirements-capture", str(self.meeting["id"]), str(self.input_path),
             "--actor", b"operator-\xff",
         )
 
     def test_meeting_malformed_actor_is_controlled_and_atomic(self) -> None:
+        """Verify an invalid-byte actor argument to meeting-record is rejected without side effects."""
         self.assert_rejected(
             *self.meeting_args, "--notes", "Synthetic only", "--actor", b"operator-\xff"
         )
 
     def test_meeting_malformed_notes_are_controlled_and_atomic(self) -> None:
+        """Verify an invalid-byte notes argument to meeting-record is rejected without side effects."""
         self.assert_rejected(
             *self.meeting_args, "--notes", b"notes-\xff", "--actor", "founder"
         )
 
     def test_export_malformed_actor_handling_remains_controlled_and_atomic(self) -> None:
+        """Verify an invalid-byte actor argument to requirements-export is rejected without touching the destination."""
         destination = self.directory / "export.json"
         destination.write_bytes(b"Retain synthetic output\n")
         for output in (str(destination), "-"):
@@ -95,6 +106,7 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
                 self.assertEqual(b"Retain synthetic output\n", destination.read_bytes())
 
     def test_capture_accepts_multilingual_actor_and_document_without_approval(self) -> None:
+        """Verify requirements-capture accepts multilingual actor and document text and records an audit event."""
         actor = "मीरा 李 سلمى"
         result = self.cli(
             "requirements-capture", str(self.meeting["id"]), str(self.input_path), "--actor", actor
@@ -117,6 +129,7 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
         self.assertEqual([], self.store.list_audit_events(action="requirements_approved"))
 
     def test_meeting_accepts_multilingual_actor_and_notes(self) -> None:
+        """Verify meeting-record accepts multilingual actor and notes text and records an audit event."""
         actor, notes = "मीरा 李 سلمى", "कृत्रिम बैठक — 会議メモ — ملاحظات تجريبية"
         result = self.cli(*self.meeting_args, "--notes", notes, "--actor", actor)
         self.assertEqual(0, result.returncode, result.stderr)
@@ -130,6 +143,7 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
         self.assertEqual([], self.store.list_audit_events(action="requirements_approved"))
 
     def test_export_accepts_multilingual_actor_without_approval(self) -> None:
+        """Verify requirements-export accepts a multilingual actor and records an audit event."""
         actor = "मीरा 李 سلمى"
         result = self.cli("requirements-export", str(self.record["id"]), "-", "--actor", actor)
         self.assertEqual(0, result.returncode, result.stderr)
@@ -142,6 +156,7 @@ class RequirementsCLIEncodingTests(unittest.TestCase):
         self.assertEqual([], self.store.list_audit_events(action="requirements_approved"))
 
     def test_non_encoding_programming_errors_still_propagate(self) -> None:
+        """Verify non-encoding exceptions from the store constructor propagate unhandled through the CLI."""
         for error in (ValueError("synthetic bug"), TypeError("synthetic bug"), RuntimeError("synthetic bug")):
             with self.subTest(error=type(error).__name__):
                 output, errors = io.StringIO(), io.StringIO()

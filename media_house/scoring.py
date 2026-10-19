@@ -42,6 +42,8 @@ class FitScore:
     disclaimer: str = SCORING_DISCLAIMER
 
     def as_dict(self) -> dict[str, object]:
+        """Return the score, reasons, confidence, and disclaimer as a plain dict."""
+
         return {
             "fit_score": self.score,
             "score_reasons": list(self.reasons),
@@ -51,6 +53,8 @@ class FitScore:
 
 
 def _provided_confidence(value: object) -> float | None:
+    """Coerce a supplied confidence value to a float in ``[0, 1]``, or ``None``."""
+
     if value is None or value == "":
         return None
     result = float(value)

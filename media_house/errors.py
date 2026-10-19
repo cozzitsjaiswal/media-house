@@ -9,6 +9,8 @@ class ValidationError(MediaHouseError):
     """Input failed validation before it could be written."""
 
     def __init__(self, message: str, *, errors: list[str] | None = None) -> None:
+        """Store the message plus the detailed list of validation errors."""
+
         super().__init__(message)
         self.errors = errors or [message]
 
