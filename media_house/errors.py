@@ -23,3 +23,7 @@ class DuplicateError(MediaHouseError):
 
 class ApprovalError(MediaHouseError):
     """A draft cannot pass the human approval gate."""
+
+
+class AuthorizationError(MediaHouseError):
+    """The authenticated principal is not authorized for an operation."""

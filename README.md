@@ -71,6 +71,14 @@ The image stores its default database under `/data`; mount a host directory at
 the image or read during the build. The build runs the offline test suite
 before it produces the runnable image.
 
+## Authentication foundation boundary
+
+The current CLI and `MediaHouseStore` remain local-only and unscoped. The first explicit
+authentication/tenant foundation is documented in [`docs/AUTH_TENANCY_FOUNDATION.md`](docs/AUTH_TENANCY_FOUNDATION.md)
+and implemented in the separate `Principal`, `TenantContext`, membership, audit, and
+tenant-scoped prospect repository modules. It does not implement login or a provider, does
+not migrate existing business rows, and must not be treated as production multi-tenancy.
+
 ## Safety boundary
 
 - CSV rows are validated before any database write; a file with an invalid row

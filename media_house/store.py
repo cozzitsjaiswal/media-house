@@ -26,6 +26,7 @@ from .normalization import (
 from . import requirements as requirements_contract
 from .scoring import SCORING_DISCLAIMER, calculate_fit_score
 from .timeutil import parse_optional_utc_timestamp, parse_utc_timestamp, utc_now
+from .tenant_repository import install_tenant_foundation_schema
 
 CSV_COLUMNS = (
     "company_name",
@@ -555,6 +556,7 @@ class MediaHouseStore:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
+        install_tenant_foundation_schema(self.connection)
         self._seed_default_service_packages()
         self.connection.commit()
 
