@@ -30,7 +30,7 @@ Each item has exactly one status.
 | Local package/order/payment intents | PARTIALLY IMPLEMENTED | Package and pending order/payment-request records exist; no provider call, payment verification or reconciliation exists. |
 | Proposal/SOW generation and approval | NOT IMPLEMENTED | No proposal table, command, export, or approved-requirements snapshot linkage exists. |
 | Contract, invoice and verified payment lifecycle | NOT IMPLEMENTED | No commercial document or verified payment state exists. |
-| Authenticated users, roles and tenant isolation | NOT IMPLEMENTED | Human actors are local attestations, not authenticated identities. |
+| Authenticated users, roles and tenant isolation | NOT IMPLEMENTED | Human actors are local attestations, not authenticated identities; design and implementation gates are recorded in `docs/SECURITY_ARCHITECTURE.md` and `docs/AUTH_TENANCY_IMPLEMENTATION_PLAN.md`. |
 | API, frontend and client portal | NOT IMPLEMENTED | The supported interface is the local CLI and Python store. |
 | Project delivery, support and renewals | NOT IMPLEMENTED | No delivery/task/support lifecycle exists. |
 | Backup, restore, retention automation and monitoring | PARTIALLY IMPLEMENTED | Requirements-history deletion guards and local audit events exist; no backup/restore drill, scheduler, health checks or alerting exists. |
@@ -61,7 +61,7 @@ Each item has exactly one status.
 
 ## Release blockers
 
-1. **High:** no authenticated API, tenant isolation, or durable production audit identity; do not use real customer data yet.
+1. **High:** no authenticated API, tenant isolation, or durable production audit identity; do not use real customer data yet. The required design and staged implementation plan are documented, but no control is implemented by those documents alone.
 2. **High:** proposal/SOW, contract, invoice, verified payment, delivery and support lifecycles are absent.
 3. **Medium:** Docker build/run and mounted-database persistence remain unverified until Docker is available.
 4. **Medium:** the unpushed feature branch has no remote CI receipt; run CI after an approved push/PR.

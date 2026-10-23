@@ -4,6 +4,9 @@ This workspace contains a small Python 3.11 + SQLite lead pipeline and an
 optional OpenStreetMap/Overpass discovery adapter. Both use only the standard
 library. The supplied documentation under `media_house_complete_documentation/`
 is retained; `docs/BASELINE_AUDIT.md` records the earlier, local-only baseline.
+`docs/SECURITY_ARCHITECTURE.md` records the current security boundary and
+`docs/AUTH_TENANCY_IMPLEMENTATION_PLAN.md` records the gated path to authenticated
+tenant isolation; neither document claims those controls are implemented yet.
 
 ## Setup
 
