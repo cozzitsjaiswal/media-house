@@ -90,9 +90,15 @@ before it produces the runnable image.
   approved draft still does not call a provider; its audit metadata explicitly
   records `send_performed: false`.
 - Completed customer meetings can be recorded with human-authored notes and an
-  explicit recording policy. The local app stores no audio or calendar data;
-  early lead states advance to `discovery_complete`, while later proposal or
-  delivery states are preserved.
+  explicit recording policy. Meeting timestamps cannot be in the future, and
+  the local app stores no audio or calendar data; early lead states advance to
+  `discovery_complete`, while later proposal or delivery states are preserved.
+- Stale CSV imports and draft approval cannot move a later-stage or terminal
+  lead backward. Explicit safety states such as `blocked`, `withdrawn`, and
+  `opted_out` remain protected unless a new safety state is recorded.
+- CSV imports cannot create or advance a lead directly into later commercial
+  stages such as `proposal_sent`, `won`, or `lost`; those transitions require a
+  reviewed workflow action that the current local milestone does not yet expose.
 
 Only `discover run --confirm-network` can request data from an Overpass
 endpoint. Planning, saved-result preview, cache-only reuse and importing are

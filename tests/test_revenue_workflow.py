@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from media_house.errors import NotFoundError, ValidationError
@@ -220,6 +221,44 @@ class RevenueWorkflowTests(unittest.TestCase):
                     )
         self.assertEqual([], self.store.list_meetings())
         self.assertEqual([], self.store.list_audit_events(action="meeting_recorded"))
+
+    def test_future_meeting_is_rejected_before_persistence(self) -> None:
+        prospect = self.import_lead()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace("+00:00", "Z")
+
+        with self.assertRaises(ValidationError) as raised:
+            self.store.record_meeting(
+                prospect["id"],
+                meeting_at=future,
+                notes="Synthetic future meeting must not become evidence.",
+                notes_permission="permission_granted",
+                recording_policy="not_recorded",
+                actor="founder",
+            )
+
+        self.assertIn("future", str(raised.exception))
+        self.assertEqual([], self.store.list_meetings())
+        self.assertEqual([], self.store.list_audit_events(action="meeting_recorded"))
+        self.assertEqual("qualified", self.store.get_prospect(prospect["id"])["lead_status"])
+
+    def test_requirements_capture_rejects_a_legacy_future_meeting(self) -> None:
+        prospect = self.import_lead()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        cursor = self.store.connection.execute(
+            """
+            INSERT INTO meetings
+                (prospect_id, meeting_at, notes, notes_permission, recording_policy, created_by, created_at)
+            VALUES (?, ?, ?, 'permission_granted', 'not_recorded', ?, ?)
+            """,
+            (prospect["id"], future, "Synthetic legacy future meeting", "founder", "2026-10-23T00:00:00Z"),
+        )
+        self.store.connection.commit()
+
+        with self.assertRaises(ValidationError) as raised:
+            self.store.capture_requirements(cursor.lastrowid, {}, actor="founder")
+
+        self.assertIn("completed meeting", str(raised.exception))
+        self.assertEqual([], self.store.list_requirements_documents())
 
     def test_meeting_cli_records_and_lists_a_synthetic_meeting(self) -> None:
         database = self.directory / "meeting-cli.sqlite3"

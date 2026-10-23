@@ -262,6 +262,69 @@ class RevenueEngineTests(unittest.TestCase):
         self.assertEqual("researched", self.store.get_prospect(prospect["id"])["lead_status"])
         self.assertEqual([], self.store.list_audit_events(action="outreach_draft_approved"))
 
+    def test_stale_import_does_not_downgrade_later_or_protected_statuses(self) -> None:
+        protected_statuses = ("discovery_complete", "proposal_sent", "won", "blocked", "opted_out")
+        for index, status in enumerate(protected_statuses):
+            with self.subTest(status=status):
+                row = lead_row(
+                    company_name=f"Status Protection {index}",
+                    website=f"https://status-protection-{index}.example",
+                    source_url=f"https://directory.example/status-protection-{index}",
+                    lead_status="qualified",
+                    opt_out="true" if status == "opted_out" else "false",
+                )
+                self.import_rows(row)
+                prospect = self.store.list_prospects()[-1]
+                self.store.connection.execute(
+                    "UPDATE prospects SET lead_status = ? WHERE id = ?",
+                    (status, prospect["id"]),
+                )
+                self.store.connection.commit()
+
+                stale = dict(row)
+                stale["lead_status"] = "researched"
+                stale["opt_out"] = "false"
+                self.import_rows(stale)
+
+                current = self.store.get_prospect(prospect["id"])
+                self.assertEqual(status, current["lead_status"])
+                if status == "opted_out":
+                    self.assertTrue(current["opt_out"])
+
+    def test_csv_import_rejects_a_later_stage_bypass(self) -> None:
+        with self.assertRaises(ValidationError) as initial:
+            self.import_rows(lead_row(lead_status="won"))
+        self.assertIn("cannot advance lead_status", str(initial.exception))
+        self.assertEqual([], self.store.list_prospects())
+
+        self.import_rows(lead_row(lead_status="qualified"))
+        stale_forward = lead_row(lead_status="proposal_sent")
+        with self.assertRaises(ValidationError) as existing:
+            self.import_rows(stale_forward)
+        self.assertIn("cannot advance lead_status", str(existing.exception))
+        self.assertEqual("qualified", self.store.list_prospects()[0]["lead_status"])
+
+    def test_draft_approval_does_not_downgrade_later_lead_status(self) -> None:
+        self.import_rows(lead_row(lead_status="qualified"))
+        prospect = self.store.list_prospects()[0]
+        self.store.connection.execute(
+            "UPDATE prospects SET lead_status = 'proposal_sent' WHERE id = ?",
+            (prospect["id"],),
+        )
+        self.store.connection.commit()
+        draft = self.store.create_outreach_draft(
+            prospect["id"],
+            channel="email",
+            content="A reviewed synthetic draft.",
+            created_by="human-drafter",
+        )
+
+        approved = self.store.approve_draft(draft["id"], human_actor="founder")
+
+        self.assertEqual("proposal_sent", self.store.get_prospect(prospect["id"])["lead_status"])
+        self.assertEqual("proposal_sent", approved["audit"]["lead_status_after"])
+        self.assertEqual("proposal_sent", approved["audit"]["lead_status_before"])
+
     def test_export_uses_template_fields_and_explainability_extensions(self) -> None:
         self.import_rows(lead_row())
         output = io.StringIO()

@@ -123,6 +123,31 @@ _MEETING_ADVANCEABLE_LEAD_STATUSES = frozenset(
     }
 )
 
+_LEAD_STATUS_RANK = {
+    "unknown": 0,
+    "new": 10,
+    "researched": 20,
+    "qualified": 30,
+    "draft_ready": 40,
+    "outreach_draft": 50,
+    "approved_to_contact": 60,
+    "contacted": 70,
+    "replied": 80,
+    "nurture": 85,
+    "meeting_booked": 90,
+    "discovery_complete": 100,
+    "proposal_draft": 110,
+    "proposal_sent": 120,
+    "negotiation": 130,
+    "lost": 140,
+    "won": 150,
+}
+_LEAD_STATUS_PROTECTED = frozenset(
+    {"blocked", "withdrawn", "suppressed", "opted_out", "lost", "won"}
+)
+_LEAD_STATUS_SAFETY_OVERRIDE = frozenset({"blocked", "withdrawn", "suppressed", "opted_out"})
+_CSV_IMPORTABLE_LEAD_STATUSES = frozenset({"unknown", "new", "researched", "qualified"})
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
     id INTEGER PRIMARY KEY,
@@ -753,6 +778,10 @@ class MediaHouseStore:
             "SELECT * FROM prospects WHERE company_id = ?", (company_id,)
         )
         existing = existing_cursor.fetchone()
+        self._validate_csv_import_status(
+            None if existing is None else existing["lead_status"],
+            lead.lead_status,
+        )
         now = utc_now()
         if existing is None:
             score = calculate_fit_score(
@@ -922,11 +951,39 @@ class MediaHouseStore:
 
     @staticmethod
     def _merge_lead_status(existing: str, incoming: str | None) -> str:
-        if not incoming:
+        current = normalize_token(existing) or "unknown"
+        requested = normalize_token(incoming)
+        if not requested or requested == current:
             return existing
-        if incoming == "new" and existing not in {"new", "unknown"}:
+        if requested in _LEAD_STATUS_SAFETY_OVERRIDE:
+            return requested
+        if current in _LEAD_STATUS_PROTECTED:
             return existing
-        return incoming
+        current_rank = _LEAD_STATUS_RANK.get(current, 0)
+        requested_rank = _LEAD_STATUS_RANK.get(requested)
+        if requested_rank is None or requested_rank < current_rank:
+            return existing
+        return requested
+
+    @staticmethod
+    def _validate_csv_import_status(existing: str | None, incoming: str | None) -> None:
+        """Reject CSV jumps over workflow gates while preserving stale data safely."""
+
+        current = normalize_token(existing) or "unknown"
+        requested = normalize_token(incoming)
+        if not requested or requested == current:
+            return
+        if requested in _LEAD_STATUS_SAFETY_OVERRIDE or requested in _CSV_IMPORTABLE_LEAD_STATUSES:
+            return
+        if current in _LEAD_STATUS_PROTECTED:
+            return
+        current_rank = _LEAD_STATUS_RANK.get(current, 0)
+        requested_rank = _LEAD_STATUS_RANK.get(requested)
+        if requested_rank is not None and requested_rank > current_rank:
+            raise ValidationError(
+                f"CSV import cannot advance lead_status from {current!r} to {requested!r}; "
+                "use the corresponding reviewed workflow action"
+            )
 
     @staticmethod
     def _merge_notes(existing: str | None, incoming: str) -> str:
@@ -1034,6 +1091,8 @@ class MediaHouseStore:
             normalized_meeting_at = parse_utc_timestamp(meeting_at, field_name="meeting_at")
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValidationError(str(exc)) from exc
+        if normalized_meeting_at > utc_now():
+            raise ValidationError("meeting_at cannot be in the future")
         meeting_notes = canonical_text(notes)
         if not meeting_notes:
             raise ValidationError("meeting notes are required")
@@ -1157,6 +1216,8 @@ class MediaHouseStore:
             if field in document and (isinstance(document[field], bool) or not isinstance(document[field], int)):
                 raise ValidationError(f"{field} must be an integer")
         meeting = self.get_meeting(meeting_id)
+        if meeting["meeting_at"] > utc_now():
+            raise ValidationError("requirements capture requires a completed meeting in the past")
         prospect = self.get_prospect(int(meeting["prospect_id"]))
         requested_status = status if status is not None else document.get("status", "DRAFT")
         if not isinstance(requested_status, str):
@@ -1977,10 +2038,13 @@ class MediaHouseStore:
                 raise ApprovalError("approval blocked: " + "; ".join(problems))
 
             approved_at = utc_now()
-            self.connection.execute(
-                "UPDATE prospects SET lead_status = 'approved_to_contact', updated_at = ? WHERE id = ?",
-                (approved_at, row["prospect_id"]),
-            )
+            current_status = normalize_token(row["lead_status"]) or "unknown"
+            next_status = self._merge_lead_status(current_status, "approved_to_contact")
+            if next_status != current_status:
+                self.connection.execute(
+                    "UPDATE prospects SET lead_status = ?, updated_at = ? WHERE id = ?",
+                    (next_status, approved_at, row["prospect_id"]),
+                )
             self.connection.execute(
                 """
                 UPDATE outreach_drafts
@@ -1993,7 +2057,9 @@ class MediaHouseStore:
                 "draft_id": draft_id,
                 "prospect_id": row["prospect_id"],
                 "channel": row["channel"],
-                "approval_status": "approved_to_contact",
+                "approval_status": "approved",
+                "lead_status_before": current_status,
+                "lead_status_after": next_status,
                 "send_performed": False,
                 "provider_call_performed": False,
             }
