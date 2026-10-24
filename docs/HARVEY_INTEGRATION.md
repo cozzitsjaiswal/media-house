@@ -32,20 +32,22 @@ without opening SQLite:
 uv run media-house harvey-import .media_house/harvey-prospects.csv
 ```
 
-The conversion requires a company name and public HTTP(S) website. It records the adapter's
-review time as `source_checked_at` and preserves Harvey's `created_at` only as source metadata;
-the lead-creation time is not evidence that Media House reviewed the source then. Missing
+The conversion requires a company name and public HTTP(S) website. It records an explicitly
+supplied `--reviewed-at` source observation time as `source_checked_at`, leaving it unset in
+previews when unavailable, and preserves Harvey's `created_at` only as source metadata.
+The lead-creation time is not evidence that Media House reviewed the source then. Missing
 region, fit, and permission facts map to explicit `unknown` values. It does not store the raw
 email address in Media House because the current local schema has no tenant-scoped contact
 address field; it records only that an email was present and preserves Harvey's email status in
 the source notes. A verified/deliverable email is not consent.
 
-After human review, explicitly import the converted rows:
+After human review, explicitly import the converted rows with the actual source observation
+time (the timestamp below is an example):
 
 ```bash
 uv run media-house --db .media_house/media-house.sqlite3 \
   harvey-import .media_house/harvey-prospects.csv \
-  --confirm-import --researcher "reviewer"
+  --confirm-import --researcher "reviewer" --reviewed-at "2026-10-24T12:34:56Z"
 ```
 
 The import uses the existing atomic CSV validation, deduplication, source-evidence, opt-out,

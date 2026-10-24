@@ -237,6 +237,10 @@ def _parser() -> argparse.ArgumentParser:
         "--researcher",
         help="required human researcher name/identifier for a confirmed import",
     )
+    harvey_import.add_argument(
+        "--reviewed-at",
+        help="source observation time (ISO date or datetime), required for a confirmed import",
+    )
     return parser
 
 
@@ -321,6 +325,7 @@ def _harvey_command(arguments: argparse.Namespace) -> None:
         arguments.db,
         confirm_import=arguments.confirm_import,
         researcher=arguments.researcher,
+        reviewed_at=arguments.reviewed_at,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     if not report["importable"]:

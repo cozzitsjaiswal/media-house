@@ -20,7 +20,7 @@ from typing import TextIO
 from .errors import ValidationError
 from .normalization import canonical_text, normalize_token, validate_source_url
 from .store import CSV_COLUMNS, ImportSummary, MediaHouseStore
-from .timeutil import parse_utc_timestamp, utc_now
+from .timeutil import parse_utc_timestamp
 
 
 MAX_HARVEY_EXPORT_BYTES = 8 * 1024 * 1024
@@ -151,16 +151,16 @@ def read_harvey_export(
 ) -> HarveyExportData:
     """Parse and conservatively convert a Harvey CSV without opening SQLite.
 
-    ``source_checked_at`` records when this adapter reviewed the export, not Harvey's
-    lead-creation timestamp. Tests and controlled replays may provide ``reviewed_at``;
-    normal calls use the current UTC time.
+    ``source_checked_at`` records the explicit observation time in ``reviewed_at``.
+    It remains unset when unavailable; Harvey's lead-creation timestamp is preserved
+    separately in the notes.
     """
 
     source = Path(path)
     text = _read_export_text(source)
     try:
         source_checked_at = (
-            utc_now()
+            ""
             if reviewed_at is None
             else parse_utc_timestamp(reviewed_at, field_name="reviewed_at")
         )
@@ -218,10 +218,11 @@ def import_harvey_export(
     *,
     confirm_import: bool = False,
     researcher: str | None = None,
+    reviewed_at: str | None = None,
 ) -> dict[str, object]:
     """Preview or explicitly import a reviewed Harvey export atomically."""
 
-    parsed = read_harvey_export(source)
+    parsed = read_harvey_export(source, reviewed_at=reviewed_at)
     report: dict[str, object] = {
         "source": str(source),
         "rows_read": parsed.rows_read,
@@ -243,6 +244,8 @@ def import_harvey_export(
         report["database_write_performed"] = False
         report["import_summary"] = ImportSummary(0, 0, 0, 0, 0, 0).as_dict()
         return report
+    if reviewed_at is None:
+        raise ValidationError("--reviewed-at is required for a confirmed Harvey import")
 
     temp_path: Path | None = None
     try:
