@@ -378,7 +378,18 @@ class TenantContext:
         if membership.tenant_id != requested_tenant or membership.principal_id != principal.actor_id:
             raise AuthorizationError("tenant membership evidence does not match the request")
         policy = permission_policy or DefaultPermissionPolicy()
-        permissions = policy.effective_permissions(principal=principal, membership=membership)
+        try:
+            policy_permissions = policy.effective_permissions(principal=principal, membership=membership)
+            if not isinstance(policy_permissions, (set, frozenset)):
+                raise TypeError("permission policy must return a set of permissions")
+            # A custom policy may reduce access, but it can never expand the
+            # permissions proven by the verifier or granted by membership.
+            permissions = frozenset(policy_permissions).intersection(
+                principal.permissions,
+                membership.permissions,
+            )
+        except Exception as exc:
+            raise AuthorizationError("permission policy failed closed") from exc
         context = object.__new__(cls)
         object.__setattr__(context, "_tenant_id", requested_tenant)
         object.__setattr__(context, "_principal", principal)

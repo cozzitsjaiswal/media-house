@@ -76,11 +76,27 @@ class TenantProvisioningService:
             self.connection.rollback()
             raise
 
-    @staticmethod
-    def _require_administrator(context: TenantContext, permission: str) -> TenantContext:
+    def _require_administrator(
+        self,
+        context: TenantContext,
+        permission: str,
+        *,
+        action: str,
+        metadata: dict[str, Any],
+    ) -> TenantContext:
         if not isinstance(context, TenantContext):
             raise AuthorizationError("a validated administrative TenantContext is required")
-        context.require(permission)
+        try:
+            context.require(permission)
+        except AuthorizationError:
+            with self._transaction():
+                self._record_provisioning_audit(
+                    context,
+                    action=action,
+                    outcome="denied",
+                    metadata={**metadata, "result": "rejected", "error": "missing_permission", "required_permission": permission},
+                )
+            raise
         return context
 
     def _record_provisioning_audit(
@@ -109,13 +125,20 @@ class TenantProvisioningService:
         business changes remain atomic with the successful audit.
         """
 
-        administrator = self._require_administrator(administrator, TENANT_PROVISION_PERMISSION)
+        if not isinstance(administrator, TenantContext):
+            raise AuthorizationError("a validated administrative TenantContext is required")
         metadata_base = {
             "administrator_actor_id": administrator.actor_id,
             "administrator_tenant_id": administrator.tenant_id,
             "target_tenant_id": _safe_metadata_value(tenant_id),
             "affected_identity": None,
         }
+        administrator = self._require_administrator(
+            administrator,
+            TENANT_PROVISION_PERMISSION,
+            action="tenant_provisioned",
+            metadata=metadata_base,
+        )
         failure: ValidationError | None = None
         target_id = ""
         with self._transaction():
@@ -169,13 +192,20 @@ class TenantProvisioningService:
     ) -> dict[str, object]:
         """Create one membership without allowing self-grant or privilege expansion."""
 
-        administrator = self._require_administrator(administrator, MEMBERSHIP_MANAGE_PERMISSION)
+        if not isinstance(administrator, TenantContext):
+            raise AuthorizationError("a validated administrative TenantContext is required")
         metadata_base = {
             "administrator_actor_id": administrator.actor_id,
             "administrator_tenant_id": administrator.tenant_id,
             "target_tenant_id": _safe_metadata_value(tenant_id),
             "affected_identity": _safe_metadata_value(principal_id),
         }
+        administrator = self._require_administrator(
+            administrator,
+            MEMBERSHIP_MANAGE_PERMISSION,
+            action="membership_provisioned",
+            metadata=metadata_base,
+        )
         failure: ValidationError | None = None
         target_id = ""
         target_principal = ""
@@ -190,6 +220,13 @@ class TenantProvisioningService:
                 target_role = normalize_token(_identifier(role, field_name="role"))
                 if target_role not in ALLOWED_MEMBERSHIP_ROLES:
                     raise ValidationError("role is not an allowed membership role")
+                if (
+                    target_id != administrator.tenant_id
+                    and TENANT_PROVISION_PERMISSION not in administrator.permissions
+                ):
+                    raise ValidationError(
+                        "cross-tenant membership provisioning requires tenant.provision"
+                    )
                 target_permissions = _permission_values(permissions)
                 if target_principal == administrator.actor_id:
                     raise ValidationError("an administrator cannot grant a new membership to themself")

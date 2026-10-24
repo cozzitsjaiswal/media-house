@@ -29,6 +29,8 @@ service boundary replace that mode.
 - `TenantContext.resolve(...)` requires a `Principal`, a requested tenant ID, a membership
   directory, and optional permission. It denies missing, unknown, inactive, mismatched, or
   insufficient membership instead of defaulting to a global tenant.
+- Even a custom permission policy is capped by the intersection of verifier permissions and
+  membership permissions; a policy cannot expand access.
 - `MembershipDirectory` and `PermissionPolicy` are provider/storage-neutral interfaces.
   `SqliteMembershipDirectory` is a read-only adapter for the foundation tables; it is not an
   identity provider.
@@ -41,6 +43,9 @@ explicit `tenant.provision` or `membership.manage` permission. It:
 
 - creates active tenants without accepting an administrator actor ID from the caller;
 - creates memberships only for existing active tenants;
+- permits membership creation in the administrator's own active tenant with
+  `membership.manage`; cross-tenant membership provisioning additionally requires the
+  explicit `tenant.provision` capability;
 - rejects self-grant, unknown roles, duplicate memberships, empty permissions, and permissions
   outside the administrator's effective permission set; and
 - records the authenticated administrator, administrator tenant, target tenant, affected

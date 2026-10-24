@@ -153,7 +153,7 @@ def read_harvey_export(path: str | os.PathLike[str]) -> HarveyExportData:
     source = Path(path)
     text = _read_export_text(source)
     try:
-        reader = csv.DictReader(io.StringIO(text))
+        reader = csv.DictReader(io.StringIO(text), strict=True)
         fieldnames = reader.fieldnames or []
         if reader.fieldnames is None:
             raise ValidationError("Harvey export must contain a CSV header")
@@ -161,6 +161,8 @@ def read_harvey_export(path: str | os.PathLike[str]) -> HarveyExportData:
         raise ValidationError(f"Harvey export could not be parsed: {exc}") from exc
     if not fieldnames:
         raise ValidationError("Harvey export must contain a CSV header")
+    if len(fieldnames) != len(set(fieldnames)):
+        raise ValidationError("Harvey export must not contain duplicate CSV header names")
     missing = sorted(HARVEY_COLUMNS.difference(fieldnames))
     if missing:
         raise ValidationError("Harvey export is missing required columns: " + ", ".join(missing))
@@ -168,17 +170,20 @@ def read_harvey_export(path: str | os.PathLike[str]) -> HarveyExportData:
     converted: list[dict[str, str]] = []
     invalid: list[dict[str, object]] = []
     rows_read = 0
-    for row_number, row in enumerate(reader, start=2):
-        if row is None or all(not canonical_text(value) for value in row.values() if value is not None):
-            continue
-        rows_read += 1
-        if None in row:
-            invalid.append({"row": row_number, "error": "CSV has more values than its header columns"})
-            continue
-        try:
-            converted.append(_convert_row(row, row_number=row_number))
-        except (ValidationError, csv.Error) as exc:
-            invalid.append({"row": row_number, "error": str(exc)})
+    try:
+        for row_number, row in enumerate(reader, start=2):
+            if row is None or all(not canonical_text(value) for value in row.values() if value is not None):
+                continue
+            rows_read += 1
+            if None in row:
+                invalid.append({"row": row_number, "error": "CSV has more values than its header columns"})
+                continue
+            try:
+                converted.append(_convert_row(row, row_number=row_number))
+            except ValidationError as exc:
+                invalid.append({"row": row_number, "error": str(exc)})
+    except csv.Error as exc:
+        raise ValidationError(f"Harvey export could not be parsed: {exc}") from exc
     return HarveyExportData(rows_read, tuple(converted), tuple(invalid))
 
 

@@ -15,7 +15,8 @@ It is not a production-readiness certification.
 - [x] Missing credentials and verifier failures fail closed without echoing credential data.
 - [x] Unknown, inactive, mismatched, or missing tenant membership fails closed.
 - [x] Effective permissions are the intersection of verifier evidence and active membership
-      permissions; missing permissions deny the operation.
+      permissions; custom policies cannot expand that intersection; missing permissions deny
+      the operation.
 - [x] Tenant-scoped prospect reads, updates, ownership detach, and CSV export are protected
       by an explicit `TenantContext`.
 - [x] Cross-tenant object access uses a non-enumerating not-found result and records denied
@@ -25,6 +26,9 @@ It is not a production-readiness certification.
       sets, and permission expansion beyond the administrator's effective permissions.
 - [x] Provisioning audit metadata records the authenticated administrator, source tenant,
       target tenant, affected identity, action, result, and status.
+- [x] Tenant-scoped administrators cannot provision memberships in a different tenant without
+      the explicit `tenant.provision` capability; denied attempts are attributed to the
+      authenticated administrator.
 - [x] Successful provisioning and its audit write are atomic; an audit failure rolls back the
       business mutation.
 - [x] Harvey CSV import is an optional reviewed-file adapter. It does not import Harvey

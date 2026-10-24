@@ -111,6 +111,13 @@ class TenantProvisioningTests(unittest.TestCase):
                 "SELECT 1 FROM auth_memberships WHERE principal_id = 'attacker'"
             ).fetchone()
         )
+        denied = self.store.connection.execute(
+            """
+            SELECT COUNT(*) FROM tenant_audit_events
+            WHERE actor_id = 'limited' AND outcome = 'denied'
+            """
+        ).fetchone()[0]
+        self.assertEqual(2, denied)
 
     def test_admin_provisioning_is_atomic_and_audited_with_authenticated_identity(self) -> None:
         tenant = self.provisioning.create_tenant("tenant-new", administrator=self.admin_context)
@@ -178,6 +185,49 @@ class TenantProvisioningTests(unittest.TestCase):
             """
         ).fetchone()[0]
         self.assertEqual(2, denied)
+
+    def test_administrator_cannot_provision_memberships_in_another_tenant(self) -> None:
+        self._insert_tenant("other-tenant")
+        scoped_permissions = {MEMBERSHIP_MANAGE_PERMISSION}
+        self._insert_membership("scoped-admin-membership", "admin-tenant", "scoped-admin", scoped_permissions)
+        scoped_admin = Principal._from_verified_identity(
+            self._identity("scoped-admin", scoped_permissions),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        scoped_context = TenantContext.resolve(
+            scoped_admin,
+            "admin-tenant",
+            self.directory,
+            required_permission=MEMBERSHIP_MANAGE_PERMISSION,
+        )
+
+        with self.assertRaises(ValidationError):
+            self.provisioning.create_membership(
+                "other-tenant",
+                "bob",
+                role="viewer",
+                permissions={"prospect.read"},
+                administrator=scoped_context,
+            )
+
+        self.assertIsNone(
+            self.store.connection.execute(
+                "SELECT 1 FROM auth_memberships WHERE tenant_id = 'other-tenant' AND principal_id = 'bob'"
+            ).fetchone()
+        )
+        event = self.store.connection.execute(
+            """
+            SELECT actor_id, tenant_id, action, outcome, metadata_json
+            FROM tenant_audit_events
+            WHERE action = 'membership_provisioned' AND outcome = 'denied'
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        self.assertEqual("scoped-admin", event[0])
+        self.assertEqual("admin-tenant", event[1])
+        self.assertEqual("membership_provisioned", event[2])
+        self.assertEqual("denied", event[3])
+        self.assertEqual("other-tenant", json.loads(event[4])["target_tenant_id"])
 
     def test_audit_failure_rolls_back_membership_insert(self) -> None:
         self._insert_tenant("tenant-atomic")

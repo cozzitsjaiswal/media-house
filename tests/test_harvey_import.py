@@ -8,7 +8,12 @@ import unittest
 from media_house.errors import ValidationError
 from pathlib import Path
 
-from media_house.harvey_import import HARVEY_COLUMNS, import_harvey_export, read_harvey_export
+from media_house.harvey_import import (
+    HARVEY_COLUMNS,
+    MAX_HARVEY_EXPORT_BYTES,
+    import_harvey_export,
+    read_harvey_export,
+)
 from media_house.store import MediaHouseStore
 
 
@@ -136,6 +141,36 @@ class HarveyImportTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 import_harvey_export(source, database, confirm_import=True)
             self.assertFalse(database.exists())
+
+    def test_oversized_export_is_rejected_before_csv_or_database_access(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "oversized.csv"
+            source.write_bytes(b"x" * (MAX_HARVEY_EXPORT_BYTES + 1))
+            database = root / "media-house.sqlite3"
+
+            with self.assertRaises(ValidationError):
+                import_harvey_export(source, database)
+            self.assertFalse(database.exists())
+
+    def test_malformed_or_duplicate_headers_are_rejected_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            malformed = root / "malformed.csv"
+            malformed.write_text(
+                ",".join(HARVEY_FIELDNAMES) + "\n\"unterminated,field\n",
+                encoding="utf-8",
+            )
+            duplicate = root / "duplicate.csv"
+            duplicate.write_text(
+                ",".join(HARVEY_FIELDNAMES[:-1] + ["created_at", "created_at"]) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValidationError):
+                read_harvey_export(malformed)
+            with self.assertRaises(ValidationError):
+                read_harvey_export(duplicate)
 
 
 if __name__ == "__main__":

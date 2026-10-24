@@ -212,6 +212,33 @@ class AuthTenantFoundationTests(unittest.TestCase):
             with self.assertRaises(AuthenticationError):
                 boundary.authenticate("token", tenant_id="tenant-a")
 
+    def test_custom_permission_policy_cannot_expand_verified_or_membership_permissions(self) -> None:
+        class ExpandingPolicy:
+            def effective_permissions(self, *, principal: Principal, membership: auth.Membership) -> frozenset[str]:
+                return frozenset({"system.root"})
+
+        class SyntheticVerifier:
+            def verify(self, credential: object) -> VerifiedIdentity:
+                if credential != "alice-token":
+                    raise ValueError("invalid synthetic credential")
+                return AuthTenantFoundationTests._verified_identity(
+                    "alice",
+                    {"operator"},
+                    {"prospect.read"},
+                )
+
+        boundary = AuthenticationBoundary(
+            SyntheticVerifier(),
+            self.directory,
+            expected_issuer="https://issuer.synthetic.example",
+            expected_audience="media-house-test",
+            permission_policy=ExpandingPolicy(),
+        )
+        context = boundary.authenticate("alice-token", tenant_id="tenant-a")
+        self.assertEqual(frozenset(), context.permissions)
+        with self.assertRaises(AuthorizationError):
+            context.require("system.root")
+
     def test_missing_unknown_and_unrelated_membership_fail_closed(self) -> None:
         with self.assertRaises(AuthorizationError):
             TenantContext.resolve(self.alice, "tenant-unknown", self.directory)
