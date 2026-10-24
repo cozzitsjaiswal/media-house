@@ -51,6 +51,8 @@ equivalent. Examples below use `uv run` so the locked environment is selected:
 uv run media-house --help
 uv run media-house --db .media_house/demo.sqlite3 package-list
 uv run python -m media_house.cli discover import tests/fixtures/discovery_synthetic.json
+# Preview a reviewed Harvey export; add --confirm-import --researcher only after review.
+uv run media-house harvey-import .media_house/harvey-prospects.csv
 ```
 
 The CLI defaults to `.media_house/media_house.sqlite3` and creates local state
@@ -70,6 +72,28 @@ The image stores its default database under `/data`; mount a host directory at
 `/data` when a container run needs persistence. No credentials are baked into
 the image or read during the build. The build runs the offline test suite
 before it produces the runnable image.
+
+## Authentication foundation boundary
+
+The current CLI and `MediaHouseStore` remain local-only and unscoped. The first explicit
+authentication/tenant foundation is documented in [`docs/AUTH_TENANCY_FOUNDATION.md`](docs/AUTH_TENANCY_FOUNDATION.md)
+and implemented in the separate `AuthenticationBoundary`, `Principal`, `TenantContext`,
+membership, provisioning, audit, and tenant-scoped prospect repository modules. The boundary
+accepts only an opaque credential from a trusted verifier plus an explicit tenant selection;
+caller-supplied actor IDs, roles, and permissions are not authority. It checks verified
+issuer/audience and time claims before membership and permission resolution. It does not
+implement login or a provider, does not migrate existing business rows, and must not be
+treated as production multi-tenancy. The implementation status is tracked in
+[`docs/AUTH_TENANCY_SECURITY_CHECKLIST.md`](docs/AUTH_TENANCY_SECURITY_CHECKLIST.md).
+
+## Optional Harvey handoff
+
+Harvey can be installed separately and used as a reviewed prospect-export source. Media House
+does not vendor Harvey, add its runtime dependencies, read its credentials, start its dashboard,
+or invoke its network/sending clients. Follow [`docs/HARVEY_INTEGRATION.md`](docs/HARVEY_INTEGRATION.md)
+to install it in ignored local state and import a reviewed CSV through the offline-preview,
+explicit-confirmation `harvey-import` command. The adapter preserves explicit unknowns and
+does not treat Harvey's email status as outreach permission or authentication evidence.
 
 ## Safety boundary
 
