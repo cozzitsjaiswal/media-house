@@ -19,6 +19,8 @@ It is not a production-readiness certification.
       the operation.
 - [x] Tenant-scoped prospect reads, updates, ownership detach, and CSV export are protected
       by an explicit `TenantContext`.
+- [x] Prospect attachment requires a separate `prospect.attach` capability rather than ordinary
+      prospect write access; detached prospects cannot be claimed by a different tenant.
 - [x] Cross-tenant object access uses a non-enumerating not-found result and records denied
       audit events.
 - [x] Tenant and membership provisioning requires explicit administrative permissions.

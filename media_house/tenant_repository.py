@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS tenant_prospect_ownership (
 CREATE INDEX IF NOT EXISTS tenant_prospect_ownership_tenant_index
     ON tenant_prospect_ownership(tenant_id, prospect_id);
 
+CREATE TABLE IF NOT EXISTS tenant_prospect_detachments (
+    prospect_id INTEGER PRIMARY KEY REFERENCES prospects(id) ON DELETE CASCADE,
+    tenant_id TEXT NOT NULL,
+    detached_by TEXT NOT NULL,
+    detached_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tenant_prospect_detachments_tenant_index
+    ON tenant_prospect_detachments(tenant_id, prospect_id);
+
 CREATE TABLE IF NOT EXISTS tenant_audit_events (
     id INTEGER PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES auth_tenants(id) ON DELETE CASCADE,
@@ -91,6 +100,8 @@ _PROSPECT_FIELDS = (
     "industry",
     "tenant_id",
 )
+
+PROSPECT_ATTACH_PERMISSION = "prospect.attach"
 
 
 def install_tenant_foundation_schema(connection: sqlite3.Connection) -> None:
@@ -142,8 +153,10 @@ class TenantScopedProspectRepository:
     """Tenant-scoped access to existing prospects through an ownership registry.
 
     ``delete`` removes the tenant ownership association rather than hard-deleting the
-    legacy prospect and its related local evidence. The legacy store remains a separate
-    single-operator mode until a complete migration is designed.
+    legacy prospect and its related local evidence. A detach tombstone prevents another
+    tenant from claiming that prospect later; only the last owning tenant may reattach it.
+    The legacy store remains a separate single-operator mode until a complete migration is
+    designed.
     """
 
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -235,10 +248,15 @@ class TenantScopedProspectRepository:
         return self._scoped_prospect(self._prospect_id(prospect_id), context)
 
     def attach_existing_prospect(self, prospect_id: int, context: TenantContext) -> dict[str, Any]:
-        """Assign one existing local prospect to the current tenant without trusting a tenant ID."""
+        """Assign an unowned local prospect with the dedicated attach capability.
+
+        A prospect detached by another tenant remains unavailable to this tenant. This
+        preserves the non-enumerating ownership boundary while allowing the last owning
+        tenant to recover an accidental detach.
+        """
 
         context = self._require_context(context)
-        context.require("prospect.write")
+        context.require(PROSPECT_ATTACH_PERMISSION)
         prospect_id = self._prospect_id(prospect_id)
         existing = self.connection.execute(
             "SELECT tenant_id FROM tenant_prospect_ownership WHERE prospect_id = ?",
@@ -251,7 +269,7 @@ class TenantScopedProspectRepository:
                 context,
                 action="tenant_prospect_attach",
                 object_id=prospect_id,
-                reason="owned_by_other_tenant",
+                reason="not_available",
             )
             raise NotFoundError(f"prospect {prospect_id} was not found")
         if self.connection.execute("SELECT 1 FROM prospects WHERE id = ?", (prospect_id,)).fetchone() is None:
@@ -259,7 +277,19 @@ class TenantScopedProspectRepository:
                 context,
                 action="tenant_prospect_attach",
                 object_id=prospect_id,
-                reason="unknown_prospect",
+                reason="not_available",
+            )
+            raise NotFoundError(f"prospect {prospect_id} was not found")
+        detached = self.connection.execute(
+            "SELECT tenant_id FROM tenant_prospect_detachments WHERE prospect_id = ?",
+            (prospect_id,),
+        ).fetchone()
+        if detached is not None and detached[0] != context.tenant_id:
+            self._record_denial(
+                context,
+                action="tenant_prospect_attach",
+                object_id=prospect_id,
+                reason="not_available",
             )
             raise NotFoundError(f"prospect {prospect_id} was not found")
 
@@ -280,7 +310,7 @@ class TenantScopedProspectRepository:
                 action="tenant_prospect_attached",
                 object_id=prospect_id,
                 outcome="committed",
-                metadata={"prospect_id": prospect_id},
+                metadata={"prospect_id": prospect_id, "reattached": detached is not None},
             )
         return self._scoped_prospect(prospect_id, context)
 
@@ -347,6 +377,18 @@ class TenantScopedProspectRepository:
                 )
                 denied = True
             else:
+                self.connection.execute(
+                    """
+                    INSERT INTO tenant_prospect_detachments
+                        (prospect_id, tenant_id, detached_by, detached_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(prospect_id) DO UPDATE SET
+                        tenant_id = excluded.tenant_id,
+                        detached_by = excluded.detached_by,
+                        detached_at = excluded.detached_at
+                    """,
+                    (prospect_id, context.tenant_id, context.actor_id, utc_now()),
+                )
                 self._record_audit(
                     context,
                     action="tenant_prospect_detached",

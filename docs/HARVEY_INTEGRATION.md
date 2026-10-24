@@ -32,11 +32,13 @@ without opening SQLite:
 uv run media-house harvey-import .media_house/harvey-prospects.csv
 ```
 
-The conversion requires a company name, public HTTP(S) website, and valid Harvey `created_at`
-timestamp. It maps missing region, fit, and permission facts to explicit `unknown` values. It
-does not store the raw email address in Media House because the current local schema has no
-tenant-scoped contact-address field; it records only that an email was present and preserves
-Harvey's email status in the source notes. A verified/deliverable email is not consent.
+The conversion requires a company name and public HTTP(S) website. It records the adapter's
+review time as `source_checked_at` and preserves Harvey's `created_at` only as source metadata;
+the lead-creation time is not evidence that Media House reviewed the source then. Missing
+region, fit, and permission facts map to explicit `unknown` values. It does not store the raw
+email address in Media House because the current local schema has no tenant-scoped contact
+address field; it records only that an email was present and preserves Harvey's email status in
+the source notes. A verified/deliverable email is not consent.
 
 After human review, explicitly import the converted rows:
 

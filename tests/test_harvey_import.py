@@ -71,7 +71,7 @@ class HarveyImportTests(unittest.TestCase):
             path = Path(directory) / "harvey.csv"
             write_harvey_csv(path, [valid_row()])
 
-            parsed = read_harvey_export(path)
+            parsed = read_harvey_export(path, reviewed_at="2026-10-24T12:34:56Z")
 
         self.assertEqual(15, len(HARVEY_COLUMNS))
         self.assertEqual(1, parsed.rows_read)
@@ -81,8 +81,10 @@ class HarveyImportTests(unittest.TestCase):
         self.assertEqual("unknown", converted["channel_permission_status"])
         self.assertEqual("email", converted["contact_channel"])
         self.assertEqual("harvey_export", converted["verified_status"])
+        self.assertEqual("2026-10-24T12:34:56Z", converted["source_checked_at"])
         notes = json.loads(converted["notes"])
         self.assertTrue(notes["email_present"])
+        self.assertEqual("2026-10-24T10:00:00Z", notes["harvey_created_at"])
         self.assertNotIn("owner@example.test", converted["notes"])
 
     def test_invalid_rows_are_previewed_without_creating_a_database(self) -> None:
@@ -171,6 +173,23 @@ class HarveyImportTests(unittest.TestCase):
                 read_harvey_export(malformed)
             with self.assertRaises(ValidationError):
                 read_harvey_export(duplicate)
+
+    def test_surplus_csv_values_are_reported_as_invalid_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "surplus.csv"
+            path.write_text(
+                ",".join(HARVEY_FIELDNAMES)
+                + "\n"
+                + ",".join([""] * len(HARVEY_FIELDNAMES) + ["surplus"])
+                + "\n",
+                encoding="utf-8",
+            )
+
+            parsed = read_harvey_export(path, reviewed_at="2026-10-24T12:34:56Z")
+
+        self.assertFalse(parsed.importable)
+        self.assertEqual(1, parsed.rows_read)
+        self.assertEqual("CSV has more values than its header columns", parsed.invalid_rows[0]["error"])
 
 
 if __name__ == "__main__":

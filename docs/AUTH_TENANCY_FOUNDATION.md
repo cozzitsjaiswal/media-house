@@ -2,7 +2,7 @@
 
 **Base:** `origin/main` at `caa15c0f7d301c89102907de9c30aad7fb733a4c`
 **Branch:** `feat/trusted-auth-provisioning-20261024`
-**Status:** local implementation only; not pushed, merged, deployed, or production-ready
+**Status:** review implementation; pushed to the feature branch, not merged or deployed, and not production-ready
 
 ## Scope
 
@@ -61,11 +61,12 @@ not add public self-service signup or invitations.
 `TenantScopedProspectRepository` is the first repository boundary that requires a validated
 `TenantContext`. It supports:
 
-- attaching an existing local prospect to the current tenant without accepting a tenant ID from
-  the operation as authority;
+- attaching an existing local prospect to the current tenant with the dedicated `prospect.attach`
+  permission, without accepting a tenant ID from the operation as authority;
 - tenant-filtered list/read;
 - tenant-checked notes update;
-- tenant ownership detach instead of destructive hard delete; and
+- tenant ownership detach instead of destructive hard delete, with a tombstone that prevents a
+  different tenant from claiming a detached prospect; and
 - tenant-filtered stream export with audit-before-delivery and delivery outcome.
 
 `tenant_prospect_ownership.prospect_id` is unique, so one legacy prospect cannot silently be
@@ -79,6 +80,7 @@ The slice adds only foundation tables:
 - `auth_tenants`;
 - `auth_memberships`;
 - `tenant_prospect_ownership`; and
+- `tenant_prospect_detachments`; and
 - `tenant_audit_events`.
 
 No existing business row is backfilled and no broad `tenant_id` migration is attempted. A

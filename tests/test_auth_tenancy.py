@@ -19,12 +19,17 @@ from media_house.auth import (
 )
 from media_house.errors import AuthenticationError, AuthorizationError, NotFoundError
 from media_house.store import CSV_COLUMNS, MediaHouseStore
-from media_house.tenant_repository import SqliteMembershipDirectory, TenantScopedProspectRepository
+from media_house.tenant_repository import (
+    PROSPECT_ATTACH_PERMISSION,
+    SqliteMembershipDirectory,
+    TenantScopedProspectRepository,
+)
 
 
 PERMISSIONS = {
     "prospect.read",
     "prospect.write",
+    PROSPECT_ATTACH_PERMISSION,
     "prospect.delete",
     "prospect.export",
     "audit.read",
@@ -71,6 +76,12 @@ class AuthTenantFoundationTests(unittest.TestCase):
         self._seed_tenant("tenant-b")
         self._seed_member("membership-a", "tenant-a", "alice", PERMISSIONS)
         self._seed_member("membership-b", "tenant-b", "bob", PERMISSIONS)
+        self._seed_member(
+            "membership-writer",
+            "tenant-a",
+            "writer",
+            {"prospect.read", "prospect.write", "audit.read"},
+        )
         self._seed_member("membership-limited", "tenant-a", "limited", {"prospect.read", "audit.read"})
         self.alice = Principal._from_verified_identity(
             self._verified_identity("alice", {"operator"}, PERMISSIONS),
@@ -78,6 +89,10 @@ class AuthTenantFoundationTests(unittest.TestCase):
         )
         self.bob = Principal._from_verified_identity(
             self._verified_identity("bob", {"operator"}, PERMISSIONS),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        self.writer = Principal._from_verified_identity(
+            self._verified_identity("writer", {"operator"}, {"prospect.read", "prospect.write", "audit.read"}),
             _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
         )
         self.limited = Principal._from_verified_identity(
@@ -257,6 +272,12 @@ class AuthTenantFoundationTests(unittest.TestCase):
             self.repository.update_notes(1, "must not write", context)
         self.assertEqual(before, self.store.get_prospect(1)["notes"])
 
+    def test_attach_requires_a_dedicated_permission(self) -> None:
+        context = self._context(self.writer, "tenant-a")
+        with self.assertRaises(AuthorizationError):
+            self.repository.attach_existing_prospect(1, context)
+        self.assertEqual([], self.repository.list(context))
+
     def test_tenant_scope_protects_read_update_delete_and_export(self) -> None:
         context_a = self._context(self.alice, "tenant-a")
         context_b = self._context(self.bob, "tenant-b")
@@ -290,6 +311,35 @@ class AuthTenantFoundationTests(unittest.TestCase):
             self.repository.attach_existing_prospect(1, context_b)
         self.assertEqual([], self.repository.list(context_b))
         self.assertEqual([1], [row["id"] for row in self.repository.list(context_a)])
+
+    def test_detach_blocks_cross_tenant_reattach_but_allows_same_tenant_recovery(self) -> None:
+        context_a = self._context(self.alice, "tenant-a")
+        context_b = self._context(self.bob, "tenant-b")
+        self.repository.attach_existing_prospect(1, context_a)
+        self.repository.delete(1, context_a)
+
+        with self.assertRaises(NotFoundError):
+            self.repository.attach_existing_prospect(1, context_b)
+        self.assertEqual([], self.repository.list(context_b))
+
+        self.repository.attach_existing_prospect(1, context_a)
+        self.assertEqual([1], [row["id"] for row in self.repository.list(context_a)])
+
+    def test_attach_denials_use_the_same_non_enumerating_reason(self) -> None:
+        context_a = self._context(self.alice, "tenant-a")
+        context_b = self._context(self.bob, "tenant-b")
+        self.repository.attach_existing_prospect(1, context_a)
+
+        with self.assertRaises(NotFoundError):
+            self.repository.attach_existing_prospect(1, context_b)
+        with self.assertRaises(NotFoundError):
+            self.repository.attach_existing_prospect(999, context_b)
+
+        events = self.repository.list_audit_events(context_b)
+        self.assertEqual(
+            ["not_available", "not_available"],
+            [event["metadata"]["reason"] for event in events[-2:]],
+        )
 
     def test_failed_cross_tenant_operations_are_audited_without_business_mutation(self) -> None:
         context_a = self._context(self.alice, "tenant-a")

@@ -13,7 +13,6 @@ import io
 import json
 import os
 import tempfile
-from datetime import date, datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -21,7 +20,7 @@ from typing import TextIO
 from .errors import ValidationError
 from .normalization import canonical_text, normalize_token, validate_source_url
 from .store import CSV_COLUMNS, ImportSummary, MediaHouseStore
-from .timeutil import parse_utc_timestamp
+from .timeutil import parse_utc_timestamp, utc_now
 
 
 MAX_HARVEY_EXPORT_BYTES = 8 * 1024 * 1024
@@ -60,12 +59,8 @@ class HarveyExportData:
 
 def _read_export_text(path: Path) -> str:
     try:
-        size = path.stat().st_size
-        if size > MAX_HARVEY_EXPORT_BYTES:
-            raise ValidationError(
-                f"Harvey export exceeds the {MAX_HARVEY_EXPORT_BYTES}-byte safety limit"
-            )
-        payload = path.read_bytes()
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_HARVEY_EXPORT_BYTES + 1)
     except (OSError, UnicodeError) as exc:
         raise ValidationError(f"Harvey export could not be read: {exc}") from exc
     if len(payload) > MAX_HARVEY_EXPORT_BYTES:
@@ -81,7 +76,12 @@ def _field(row: dict[str, str | None], name: str) -> str:
     return canonical_text(value)
 
 
-def _convert_row(row: dict[str, str | None], *, row_number: int) -> dict[str, str]:
+def _convert_row(
+    row: dict[str, str | None],
+    *,
+    row_number: int,
+    source_checked_at: str,
+) -> dict[str, str]:
     company_name = _field(row, "company_name")
     if not company_name:
         raise ValidationError(f"row {row_number}: company_name is required")
@@ -93,10 +93,6 @@ def _convert_row(row: dict[str, str | None], *, row_number: int) -> dict[str, st
         )
     try:
         source_url = validate_source_url(website)
-        created_at = _field(row, "created_at")
-        if len(created_at) == 10:
-            created_at = datetime.combine(date.fromisoformat(created_at), datetime.min.time(), tzinfo=timezone.utc).isoformat()
-        source_checked_at = parse_utc_timestamp(created_at, field_name="created_at")
     except (TypeError, ValueError) as exc:
         raise ValidationError(f"row {row_number}: {exc}") from exc
     email = _field(row, "email")
@@ -118,6 +114,7 @@ def _convert_row(row: dict[str, str | None], *, row_number: int) -> dict[str, st
             "seniority": _field(row, "seniority") or "unknown",
             "score": _field(row, "score") or "unknown",
             "personalization": _field(row, "personalization") or "unknown",
+            "harvey_created_at": _field(row, "created_at") or "unknown",
             "fit_boundary": "Harvey export evidence only; fit is not independently verified.",
             "permission_boundary": "Contact channel presence is not outreach permission.",
         },
@@ -147,11 +144,28 @@ def _convert_row(row: dict[str, str | None], *, row_number: int) -> dict[str, st
     }
 
 
-def read_harvey_export(path: str | os.PathLike[str]) -> HarveyExportData:
-    """Parse and conservatively convert a Harvey CSV without opening SQLite."""
+def read_harvey_export(
+    path: str | os.PathLike[str],
+    *,
+    reviewed_at: str | None = None,
+) -> HarveyExportData:
+    """Parse and conservatively convert a Harvey CSV without opening SQLite.
+
+    ``source_checked_at`` records when this adapter reviewed the export, not Harvey's
+    lead-creation timestamp. Tests and controlled replays may provide ``reviewed_at``;
+    normal calls use the current UTC time.
+    """
 
     source = Path(path)
     text = _read_export_text(source)
+    try:
+        source_checked_at = (
+            utc_now()
+            if reviewed_at is None
+            else parse_utc_timestamp(reviewed_at, field_name="reviewed_at")
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     try:
         reader = csv.DictReader(io.StringIO(text), strict=True)
         fieldnames = reader.fieldnames or []
@@ -172,14 +186,19 @@ def read_harvey_export(path: str | os.PathLike[str]) -> HarveyExportData:
     rows_read = 0
     try:
         for row_number, row in enumerate(reader, start=2):
-            if row is None or all(not canonical_text(value) for value in row.values() if value is not None):
+            if row is None:
                 continue
-            rows_read += 1
             if None in row:
+                rows_read += 1
                 invalid.append({"row": row_number, "error": "CSV has more values than its header columns"})
                 continue
+            if all(not canonical_text(value) for value in row.values() if value is not None):
+                continue
+            rows_read += 1
             try:
-                converted.append(_convert_row(row, row_number=row_number))
+                converted.append(
+                    _convert_row(row, row_number=row_number, source_checked_at=source_checked_at)
+                )
             except ValidationError as exc:
                 invalid.append({"row": row_number, "error": str(exc)})
     except csv.Error as exc:
