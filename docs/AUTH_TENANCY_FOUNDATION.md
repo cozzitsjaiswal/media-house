@@ -1,7 +1,7 @@
 # Authentication Foundation and Tenant-Isolation Slice
 
 **Base:** `origin/main` at `caa15c0f7d301c89102907de9c30aad7fb733a4c`
-**Branch:** `feat/auth-tenant-foundation-20261023`
+**Branch:** `feat/trusted-auth-provisioning-20261024`
 **Status:** local implementation only; not pushed, merged, deployed, or production-ready
 
 ## Scope
@@ -17,17 +17,39 @@ service boundary replace that mode.
 
 ## New contracts
 
-- `media_house.auth.VerifiedIdentity` is evidence that a trusted authentication adapter has
-  already validated an external credential. No login, token parsing, password handling, or
-  provider integration is implemented here.
-- `Principal` is immutable and can only be created from `VerifiedIdentity`. Direct construction
-  from request-shaped dictionaries or actor strings fails.
+- `media_house.auth.AuthenticationVerifier` is the explicit integration seam for a trusted
+  identity/session adapter. The verifier must validate the external credential before it
+  returns `VerifiedIdentity`; this project does not parse tokens or trust unsigned payloads.
+- `AuthenticationBoundary.authenticate(...)` accepts only an opaque credential and an explicit
+  tenant selection. It checks verifier output type, verified status, configured issuer/audience,
+  expiry and not-before claims, then resolves membership before returning an immutable
+  `AuthenticatedRequestContext`.
+- `Principal` is immutable and can only be created inside the authentication boundary from
+  `VerifiedIdentity`. Request-shaped actor IDs, roles and permission lists are not authority.
 - `TenantContext.resolve(...)` requires a `Principal`, a requested tenant ID, a membership
   directory, and optional permission. It denies missing, unknown, inactive, mismatched, or
   insufficient membership instead of defaulting to a global tenant.
 - `MembershipDirectory` and `PermissionPolicy` are provider/storage-neutral interfaces.
   `SqliteMembershipDirectory` is a read-only adapter for the foundation tables; it is not an
   identity provider.
+
+## Administrative provisioning
+
+`media_house.provisioning.TenantProvisioningService` is the only application provisioning
+interface in this slice. It requires an existing authenticated `TenantContext` with the
+explicit `tenant.provision` or `membership.manage` permission. It:
+
+- creates active tenants without accepting an administrator actor ID from the caller;
+- creates memberships only for existing active tenants;
+- rejects self-grant, unknown roles, duplicate memberships, empty permissions, and permissions
+  outside the administrator's effective permission set; and
+- records the authenticated administrator, administrator tenant, target tenant, affected
+  identity, requested role/permissions, action, result, and status in the tenant audit log.
+
+Tenant creation and its committed audit event share one transaction. Membership creation and
+its committed audit event share one transaction. If the audit write fails, the provisioning
+change rolls back. Unauthorized callers fail before any provisioning mutation; this slice does
+not add public self-service signup or invitations.
 
 ## Tenant-scoped prospect path
 
@@ -61,7 +83,8 @@ create a rollback/backup copy, and verify counts and ownership before enabling r
 The current SQLite file remains a local storage boundary, not a substitute for shared-database
 row-level security. The tenant repository uses explicit ownership joins and application checks,
 but it does not provide PostgreSQL RLS, filesystem encryption, remote identity, MFA, backup
-restore, or production session security.
+restore, or production session security. The application must keep raw SQLite connections out
+of untrusted request code; direct database access can bypass Python-level checks.
 
 ## Audit boundary
 
@@ -74,13 +97,20 @@ A failed stream export is marked `delivery_failed`; it is never reported as deli
 
 Before production or a shared client deployment, implement and test:
 
-1. a real trusted OIDC/session/token verification adapter;
-2. tenant/user lifecycle and authenticated membership administration;
+1. a real trusted OIDC/session/token verification adapter implementing
+   `AuthenticationVerifier` and validating signatures, key rotation, issuer, audience,
+   nonce/state/session binding, revocation and clock skew according to the provider;
+2. durable user lifecycle, invitations, membership administration and MFA;
 3. a complete tenant-aware service/API boundary;
 4. migration/backfill for all tenant-owned tables and same-tenant relationships;
 5. authenticated file export/download authorization and object-storage policy;
 6. MFA, secret management, encryption, retention, backup/restore and offboarding; and
 7. full cross-tenant tests for every list/read/create/update/delete/export/file/job path.
+
+The local Harvey integration is deliberately separate from this trust boundary. It consumes a
+reviewed Harvey CSV export through `media-house harvey-import`; it does not import Harvey's
+credentials, dashboard, sender, or network clients, and a Harvey export is not authentication
+evidence or outreach permission.
 
 The current implementation is a reviewable foundation for those next steps, not evidence that
 production authentication or tenant isolation is complete.

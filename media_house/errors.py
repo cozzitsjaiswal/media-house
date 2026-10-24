@@ -27,3 +27,7 @@ class ApprovalError(MediaHouseError):
 
 class AuthorizationError(MediaHouseError):
     """The authenticated principal is not authorized for an operation."""
+
+
+class AuthenticationError(AuthorizationError):
+    """Credential verification or authenticated-request construction failed."""

@@ -221,6 +221,22 @@ def _parser() -> argparse.ArgumentParser:
     finder_import.add_argument("--synthetic-db", required=True, help="disposable SQLite path outside the workspace")
     finder_import.add_argument("--confirm-import", action="store_true", help="permit the insert-only synthetic import")
     finder_import.add_argument("--researcher", help="required human researcher for confirmed imports")
+
+    harvey_import = subparsers.add_parser(
+        "harvey-import",
+        help="preview or explicitly import a reviewed Harvey CSV export",
+    )
+    harvey_import.add_argument("csv_path", type=Path)
+    harvey_import.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="SQLite database path")
+    harvey_import.add_argument(
+        "--confirm-import",
+        action="store_true",
+        help="approve the converted rows for one atomic local import",
+    )
+    harvey_import.add_argument(
+        "--researcher",
+        help="required human researcher name/identifier for a confirmed import",
+    )
     return parser
 
 
@@ -295,6 +311,22 @@ def _finder_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _harvey_command(arguments: argparse.Namespace) -> None:
+    # The preview path intentionally runs before MediaHouseStore is opened, so a
+    # malformed or merely reviewed export cannot create or mutate SQLite state.
+    from .harvey_import import import_harvey_export
+
+    report = import_harvey_export(
+        arguments.csv_path,
+        arguments.db,
+        confirm_import=arguments.confirm_import,
+        researcher=arguments.researcher,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    if not report["importable"]:
+        raise ValidationError("Harvey export contains invalid rows; review invalid_rows before import")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
@@ -305,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if arguments.command == "finder":
             return _finder_command(arguments)
+        if arguments.command == "harvey-import":
+            _harvey_command(arguments)
+            return 0
         with MediaHouseStore(arguments.db) as store:
             if arguments.command == "import-csv":
                 result = store.import_csv(arguments.csv_path, researcher=arguments.researcher)

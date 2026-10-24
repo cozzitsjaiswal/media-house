@@ -5,11 +5,19 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import media_house.auth as auth
-from media_house.auth import AuthenticationBoundaryError, Principal, TenantContext, VerifiedIdentity
-from media_house.errors import AuthorizationError, NotFoundError
+from media_house.auth import (
+    AuthenticatedRequestContext,
+    AuthenticationBoundary,
+    AuthenticationBoundaryError,
+    Principal,
+    TenantContext,
+    VerifiedIdentity,
+)
+from media_house.errors import AuthenticationError, AuthorizationError, NotFoundError
 from media_house.store import CSV_COLUMNS, MediaHouseStore
 from media_house.tenant_repository import SqliteMembershipDirectory, TenantScopedProspectRepository
 
@@ -64,10 +72,17 @@ class AuthTenantFoundationTests(unittest.TestCase):
         self._seed_member("membership-a", "tenant-a", "alice", PERMISSIONS)
         self._seed_member("membership-b", "tenant-b", "bob", PERMISSIONS)
         self._seed_member("membership-limited", "tenant-a", "limited", {"prospect.read", "audit.read"})
-        self.alice = Principal.from_verified_identity(self._verified_identity("alice", {"operator"}, PERMISSIONS))
-        self.bob = Principal.from_verified_identity(self._verified_identity("bob", {"operator"}, PERMISSIONS))
-        self.limited = Principal.from_verified_identity(
-            self._verified_identity("limited", {"client_member"}, {"prospect.read", "audit.read"})
+        self.alice = Principal._from_verified_identity(
+            self._verified_identity("alice", {"operator"}, PERMISSIONS),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        self.bob = Principal._from_verified_identity(
+            self._verified_identity("bob", {"operator"}, PERMISSIONS),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        self.limited = Principal._from_verified_identity(
+            self._verified_identity("limited", {"client_member"}, {"prospect.read", "audit.read"}),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
         )
 
     def tearDown(self) -> None:
@@ -95,12 +110,25 @@ class AuthTenantFoundationTests(unittest.TestCase):
         self.store.connection.commit()
 
     @staticmethod
-    def _verified_identity(actor_id: str, roles: set[str], permissions: set[str]) -> VerifiedIdentity:
+    def _verified_identity(
+        actor_id: str,
+        roles: set[str],
+        permissions: set[str],
+        *,
+        issuer: str = "https://issuer.synthetic.example",
+        audience: str = "media-house-test",
+        expires_at: str = "2099-01-01T00:00:00Z",
+        not_before: str | None = None,
+    ) -> VerifiedIdentity:
         return auth.VerifiedIdentity._from_trusted_verifier(
             actor_id=actor_id,
             roles=roles,
             permissions=permissions,
             authentication_source="test-verifier",
+            issuer=issuer,
+            audience=audience,
+            expires_at=expires_at,
+            not_before=not_before,
             _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
         )
 
@@ -116,11 +144,73 @@ class AuthTenantFoundationTests(unittest.TestCase):
         with self.assertRaises(AuthenticationBoundaryError):
             Principal(actor_id="alice", roles={"operator"}, permissions=PERMISSIONS)
         with self.assertRaises(AuthenticationBoundaryError):
-            Principal.from_verified_identity({"actor_id": "alice"})  # type: ignore[arg-type]
+            Principal._from_verified_identity({"actor_id": "alice"}, _proof=auth._TRUSTED_AUTHENTICATION_PROOF)  # type: ignore[arg-type]
         with self.assertRaises(AuthenticationBoundaryError):
             VerifiedIdentity(actor_id="alice")  # type: ignore[call-arg]
         with self.assertRaises(AuthorizationError):
             TenantContext("tenant-a", self.alice)  # type: ignore[call-arg]
+
+    def test_authentication_boundary_uses_opaque_credential_and_explicit_tenant(self) -> None:
+        class SyntheticVerifier:
+            def verify(self, credential: object) -> VerifiedIdentity:
+                if not isinstance(credential, str) or credential != "alice-token":
+                    raise ValueError("invalid synthetic credential")
+                return AuthTenantFoundationTests._verified_identity("alice", {"operator"}, PERMISSIONS)
+
+        boundary = AuthenticationBoundary(
+            SyntheticVerifier(),
+            self.directory,
+            expected_issuer="https://issuer.synthetic.example",
+            expected_audience="media-house-test",
+            clock=lambda: datetime(2026, 10, 24, tzinfo=timezone.utc),
+        )
+        request_context = boundary.authenticate(
+            "alice-token",
+            tenant_id="tenant-a",
+            required_permission="prospect.read",
+        )
+        self.assertIsInstance(request_context, AuthenticatedRequestContext)
+        self.assertEqual("alice", request_context.actor_id)
+        self.assertEqual("tenant-a", request_context.tenant_id)
+        self.assertEqual(PERMISSIONS, request_context.permissions)
+
+        with self.assertRaises(AuthenticationError):
+            boundary.authenticate(
+                {
+                    "actor_id": "alice",
+                    "tenant_id": "tenant-a",
+                    "role": "owner",
+                    "permissions": sorted(PERMISSIONS),
+                },
+                tenant_id="tenant-a",
+                required_permission="prospect.read",
+            )
+
+    def test_authentication_boundary_rejects_expired_future_and_wrong_scope_evidence(self) -> None:
+        class SyntheticVerifier:
+            def __init__(self, identity: VerifiedIdentity) -> None:
+                self.identity = identity
+
+            def verify(self, credential: object) -> VerifiedIdentity:
+                if credential != "token":
+                    raise ValueError("invalid synthetic credential")
+                return self.identity
+
+        for identity in (
+            self._verified_identity("alice", {"operator"}, PERMISSIONS, expires_at="2026-10-23T23:59:59Z"),
+            self._verified_identity("alice", {"operator"}, PERMISSIONS, issuer="https://evil.example"),
+            self._verified_identity("alice", {"operator"}, PERMISSIONS, audience="other-app"),
+            self._verified_identity("alice", {"operator"}, PERMISSIONS, not_before="2099-01-01T00:00:00Z"),
+        ):
+            boundary = AuthenticationBoundary(
+                SyntheticVerifier(identity),
+                self.directory,
+                expected_issuer="https://issuer.synthetic.example",
+                expected_audience="media-house-test",
+                clock=lambda: datetime(2026, 10, 24, tzinfo=timezone.utc),
+            )
+            with self.assertRaises(AuthenticationError):
+                boundary.authenticate("token", tenant_id="tenant-a")
 
     def test_missing_unknown_and_unrelated_membership_fail_closed(self) -> None:
         with self.assertRaises(AuthorizationError):

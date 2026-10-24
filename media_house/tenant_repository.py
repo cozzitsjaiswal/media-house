@@ -459,6 +459,7 @@ class TenantScopedProspectRepository:
         context: TenantContext,
         *,
         action: str,
+        object_type: str = "prospect",
         object_id: int | None,
         outcome: str,
         metadata: dict[str, Any],
@@ -471,9 +472,9 @@ class TenantScopedProspectRepository:
             """
             INSERT INTO tenant_audit_events
                 (tenant_id, actor_id, action, object_type, object_id, occurred_at, outcome, metadata_json)
-            VALUES (?, ?, ?, 'prospect', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (context.tenant_id, context.actor_id, action, object_id, utc_now(), outcome, serialized),
+            (context.tenant_id, context.actor_id, action, object_type, object_id, utc_now(), outcome, serialized),
         )
         return int(cursor.lastrowid)
 
