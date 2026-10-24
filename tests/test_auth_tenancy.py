@@ -3,8 +3,11 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sqlite3
+import threading
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,6 +85,12 @@ class AuthTenantFoundationTests(unittest.TestCase):
             "writer",
             {"prospect.read", "prospect.write", "audit.read"},
         )
+        self._seed_member(
+            "membership-write-only",
+            "tenant-a",
+            "write-only",
+            {"prospect.write", "audit.read"},
+        )
         self._seed_member("membership-limited", "tenant-a", "limited", {"prospect.read", "audit.read"})
         self.alice = Principal._from_verified_identity(
             self._verified_identity("alice", {"operator"}, PERMISSIONS),
@@ -93,6 +102,10 @@ class AuthTenantFoundationTests(unittest.TestCase):
         )
         self.writer = Principal._from_verified_identity(
             self._verified_identity("writer", {"operator"}, {"prospect.read", "prospect.write", "audit.read"}),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        self.write_only = Principal._from_verified_identity(
+            self._verified_identity("write-only", {"operator"}, {"prospect.write", "audit.read"}),
             _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
         )
         self.limited = Principal._from_verified_identity(
@@ -278,6 +291,34 @@ class AuthTenantFoundationTests(unittest.TestCase):
             self.repository.attach_existing_prospect(1, context)
         self.assertEqual([], self.repository.list(context))
 
+    def test_attach_and_update_require_read_before_mutation(self) -> None:
+        self._seed_member(
+            "membership-attach-only",
+            "tenant-a",
+            "attach-only",
+            {PROSPECT_ATTACH_PERMISSION, "audit.read"},
+        )
+        attach_only = Principal._from_verified_identity(
+            self._verified_identity("attach-only", {"operator"}, {PROSPECT_ATTACH_PERMISSION, "audit.read"}),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        attach_context = self._context(attach_only, "tenant-a")
+        with self.assertRaises(AuthorizationError):
+            self.repository.attach_existing_prospect(1, attach_context)
+        self.assertIsNone(
+            self.store.connection.execute(
+                "SELECT 1 FROM tenant_prospect_ownership WHERE prospect_id = 1"
+            ).fetchone()
+        )
+
+        owner_context = self._context(self.alice, "tenant-a")
+        self.repository.attach_existing_prospect(1, owner_context)
+        write_only_context = self._context(self.write_only, "tenant-a")
+        before = self.store.get_prospect(1)["notes"]
+        with self.assertRaises(AuthorizationError):
+            self.repository.update_notes(1, "must not write", write_only_context)
+        self.assertEqual(before, self.store.get_prospect(1)["notes"])
+
     def test_tenant_scope_protects_read_update_delete_and_export(self) -> None:
         context_a = self._context(self.alice, "tenant-a")
         context_b = self._context(self.bob, "tenant-b")
@@ -324,6 +365,62 @@ class AuthTenantFoundationTests(unittest.TestCase):
 
         self.repository.attach_existing_prospect(1, context_a)
         self.assertEqual([1], [row["id"] for row in self.repository.list(context_a)])
+
+    def test_attach_rechecks_ownership_inside_the_write_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "tenant-race.sqlite3"
+            destination = sqlite3.connect(database)
+            self.store.connection.backup(destination)
+            destination.close()
+
+            owner_connection = sqlite3.connect(database, check_same_thread=False)
+            owner_connection.row_factory = sqlite3.Row
+            owner_repository = TenantScopedProspectRepository(owner_connection)
+            owner_context = self._context(self.alice, "tenant-a")
+            context_b = self._context(self.bob, "tenant-b")
+            ready = threading.Event()
+            release = threading.Event()
+            result: dict[str, object] = {}
+
+            class PausingRepository(TenantScopedProspectRepository):
+                @contextmanager
+                def _transaction(self):
+                    ready.set()
+                    if not release.wait(5):
+                        raise RuntimeError("test transaction pause timed out")
+                    with super()._transaction():
+                        yield
+
+            def tenant_b_attach() -> None:
+                connection = sqlite3.connect(database, check_same_thread=False)
+                connection.row_factory = sqlite3.Row
+                repository = PausingRepository(connection)
+                try:
+                    repository.attach_existing_prospect(1, context_b)
+                    result["attached"] = True
+                except NotFoundError:
+                    result["not_found"] = True
+                except Exception as exc:  # pragma: no cover - diagnostic guard for the race test
+                    result["error"] = f"{type(exc).__name__}: {exc}"
+                finally:
+                    connection.close()
+
+            thread = threading.Thread(target=tenant_b_attach)
+            thread.start()
+            self.assertTrue(ready.wait(5), "tenant B did not reach the transaction boundary")
+
+            owner_repository.attach_existing_prospect(1, owner_context)
+            owner_repository.delete(1, owner_context)
+            release.set()
+            thread.join(5)
+            owner = owner_connection.execute(
+                "SELECT tenant_id FROM tenant_prospect_ownership WHERE prospect_id = 1"
+            ).fetchone()
+            owner_connection.close()
+
+        self.assertFalse(thread.is_alive(), "tenant B race thread did not finish")
+        self.assertEqual({"not_found": True}, result)
+        self.assertIsNone(owner)
 
     def test_attach_denials_use_the_same_non_enumerating_reason(self) -> None:
         context_a = self._context(self.alice, "tenant-a")

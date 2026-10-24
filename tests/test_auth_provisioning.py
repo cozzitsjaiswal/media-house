@@ -156,6 +156,31 @@ class TenantProvisioningTests(unittest.TestCase):
         self.assertEqual("tenant-new", membership_metadata["target_tenant_id"])
         self.assertEqual("bob", membership_metadata["affected_identity"])
 
+    def test_tenant_provision_can_create_a_same_tenant_membership(self) -> None:
+        provisioner_permissions = {TENANT_PROVISION_PERMISSION, "prospect.read"}
+        self._insert_membership(
+            "provisioner-membership",
+            "admin-tenant",
+            "provisioner",
+            provisioner_permissions,
+        )
+        provisioner = Principal._from_verified_identity(
+            self._identity("provisioner", provisioner_permissions),
+            _proof=auth._TRUSTED_AUTHENTICATION_PROOF,
+        )
+        provisioner_context = TenantContext.resolve(provisioner, "admin-tenant", self.directory)
+
+        membership = self.provisioning.create_membership(
+            "admin-tenant",
+            "delegated",
+            role="viewer",
+            permissions={"prospect.read"},
+            administrator=provisioner_context,
+        )
+
+        self.assertEqual("delegated", membership["principal_id"])
+        self.assertEqual("prospect.read", membership["permissions"][0])
+
     def test_self_grant_and_permission_expansion_are_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             self.provisioning.create_membership(

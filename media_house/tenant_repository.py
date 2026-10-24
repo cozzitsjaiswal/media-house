@@ -257,66 +257,85 @@ class TenantScopedProspectRepository:
 
         context = self._require_context(context)
         context.require(PROSPECT_ATTACH_PERMISSION)
+        context.require("prospect.read")
         prospect_id = self._prospect_id(prospect_id)
-        existing = self.connection.execute(
-            "SELECT tenant_id FROM tenant_prospect_ownership WHERE prospect_id = ?",
-            (prospect_id,),
-        ).fetchone()
-        if existing is not None:
-            if existing[0] == context.tenant_id:
-                return self._scoped_prospect(prospect_id, context)
-            self._record_denial(
-                context,
-                action="tenant_prospect_attach",
-                object_id=prospect_id,
-                reason="not_available",
-            )
-            raise NotFoundError(f"prospect {prospect_id} was not found")
-        if self.connection.execute("SELECT 1 FROM prospects WHERE id = ?", (prospect_id,)).fetchone() is None:
-            self._record_denial(
-                context,
-                action="tenant_prospect_attach",
-                object_id=prospect_id,
-                reason="not_available",
-            )
-            raise NotFoundError(f"prospect {prospect_id} was not found")
-        detached = self.connection.execute(
-            "SELECT tenant_id FROM tenant_prospect_detachments WHERE prospect_id = ?",
-            (prospect_id,),
-        ).fetchone()
-        if detached is not None and detached[0] != context.tenant_id:
-            self._record_denial(
-                context,
-                action="tenant_prospect_attach",
-                object_id=prospect_id,
-                reason="not_available",
-            )
-            raise NotFoundError(f"prospect {prospect_id} was not found")
-
+        denied = False
+        detached = None
         with self._transaction():
-            try:
-                self.connection.execute(
-                    """
-                    INSERT INTO tenant_prospect_ownership
-                        (tenant_id, prospect_id, assigned_by, assigned_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (context.tenant_id, prospect_id, context.actor_id, utc_now()),
+            existing = self.connection.execute(
+                "SELECT tenant_id FROM tenant_prospect_ownership WHERE prospect_id = ?",
+                (prospect_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != context.tenant_id:
+                    self._record_audit(
+                        context,
+                        action="tenant_prospect_attach",
+                        object_id=prospect_id,
+                        outcome="denied",
+                        metadata={"reason": "not_available"},
+                    )
+                    denied = True
+            elif self.connection.execute(
+                "SELECT 1 FROM prospects WHERE id = ?", (prospect_id,)
+            ).fetchone() is None:
+                self._record_audit(
+                    context,
+                    action="tenant_prospect_attach",
+                    object_id=prospect_id,
+                    outcome="denied",
+                    metadata={"reason": "not_available"},
                 )
-            except sqlite3.IntegrityError as exc:
-                raise NotFoundError(f"prospect {prospect_id} was not found") from exc
-            self._record_audit(
-                context,
-                action="tenant_prospect_attached",
-                object_id=prospect_id,
-                outcome="committed",
-                metadata={"prospect_id": prospect_id, "reattached": detached is not None},
-            )
+                denied = True
+            else:
+                detached = self.connection.execute(
+                    "SELECT tenant_id FROM tenant_prospect_detachments WHERE prospect_id = ?",
+                    (prospect_id,),
+                ).fetchone()
+                if detached is not None and detached[0] != context.tenant_id:
+                    self._record_audit(
+                        context,
+                        action="tenant_prospect_attach",
+                        object_id=prospect_id,
+                        outcome="denied",
+                        metadata={"reason": "not_available"},
+                    )
+                    denied = True
+                else:
+                    try:
+                        self.connection.execute(
+                            """
+                            INSERT INTO tenant_prospect_ownership
+                                (tenant_id, prospect_id, assigned_by, assigned_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (context.tenant_id, prospect_id, context.actor_id, utc_now()),
+                        )
+                    except sqlite3.IntegrityError:
+                        self._record_audit(
+                            context,
+                            action="tenant_prospect_attach",
+                            object_id=prospect_id,
+                            outcome="denied",
+                            metadata={"reason": "not_available"},
+                        )
+                        denied = True
+                    else:
+                        self._record_audit(
+                            context,
+                            action="tenant_prospect_attached",
+                            object_id=prospect_id,
+                            outcome="committed",
+                            metadata={"prospect_id": prospect_id, "reattached": detached is not None},
+                        )
+        if denied:
+            raise NotFoundError(f"prospect {prospect_id} was not found")
         return self._scoped_prospect(prospect_id, context)
 
     def update_notes(self, prospect_id: int, notes: str, context: TenantContext) -> dict[str, Any]:
         context = self._require_context(context)
         context.require("prospect.write")
+        context.require("prospect.read")
         prospect_id = self._prospect_id(prospect_id)
         if not isinstance(notes, str):
             raise ValidationError("notes must be a string")

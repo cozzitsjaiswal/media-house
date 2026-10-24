@@ -79,24 +79,28 @@ class TenantProvisioningService:
     def _require_administrator(
         self,
         context: TenantContext,
-        permission: str,
+        permission: str | tuple[str, ...],
         *,
         action: str,
         metadata: dict[str, Any],
     ) -> TenantContext:
         if not isinstance(context, TenantContext):
             raise AuthorizationError("a validated administrative TenantContext is required")
-        try:
-            context.require(permission)
-        except AuthorizationError:
+        required_permissions = (permission,) if isinstance(permission, str) else permission
+        if not any(item in context.permissions for item in required_permissions):
             with self._transaction():
                 self._record_provisioning_audit(
                     context,
                     action=action,
                     outcome="denied",
-                    metadata={**metadata, "result": "rejected", "error": "missing_permission", "required_permission": permission},
+                    metadata={
+                        **metadata,
+                        "result": "rejected",
+                        "error": "missing_permission",
+                        "required_permissions": list(required_permissions),
+                    },
                 )
-            raise
+            raise AuthorizationError("permission denied: " + " or ".join(required_permissions))
         return context
 
     def _record_provisioning_audit(
@@ -202,7 +206,7 @@ class TenantProvisioningService:
         }
         administrator = self._require_administrator(
             administrator,
-            MEMBERSHIP_MANAGE_PERMISSION,
+            (MEMBERSHIP_MANAGE_PERMISSION, TENANT_PROVISION_PERMISSION),
             action="membership_provisioned",
             metadata=metadata_base,
         )
